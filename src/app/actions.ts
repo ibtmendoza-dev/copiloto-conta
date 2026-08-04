@@ -24,6 +24,17 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
     let base64Content: string | null = null;
     let mediaType: string = 'image/jpeg';
 
+    // `descripcionOriginal` existe para poder reconstruir de donde salio un
+    // registro: es el mensaje que escribio la persona. Cuando solo se manda la
+    // foto de un ticket, sin texto, quedaba vacio -- y meses despues ese
+    // movimiento no tiene mas contexto que los nombres de los productos que
+    // dedujo la inteligencia artificial. Se deja constancia de como se capturo.
+    //
+    // Ojo: esto NO toca lo que se le manda al modelo (`messagesContent` sigue
+    // usando `formData.inputOriginal` tal cual). Es solo lo que se guarda.
+    const descripcionOriginal = formData.inputOriginal?.trim()
+      || (formData.imageBase64 ? '(Capturado desde la imagen del comprobante, sin texto)' : '');
+
     if (formData.imageBase64) {
       base64Content = formData.imageBase64.split(',')[1];
 
@@ -153,7 +164,7 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
           contexto: finalContext,
           categoria: mov.categoria,
           fechaOcurrencia: new Date(),
-          descripcionOriginal: formData.inputOriginal,
+          descripcionOriginal,
           estado: fileUrl ? 'COMPROBADO' : 'PENDIENTE_COMPROBANTE',
           contraparteNombre: mov.contraparte || null,
           comprobantes: fileUrl ? {
