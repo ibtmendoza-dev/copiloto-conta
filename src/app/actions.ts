@@ -1,0 +1,145 @@
+'use server'
+
+import { prisma } from '@/lib/prisma'
+import { generateObject } from 'ai'
+import { google } from '@ai-sdk/google'
+import { z } from 'zod'
+import fs from 'fs'
+import path from 'path'
+import { getSession } from '@/lib/auth'
+
+export async function createMovimiento(formData: { inputOriginal: string, imageBase64?: string }) {
+  try {
+    const session = await getSession();
+    if (!session) throw new Error('No autorizado');
+
+    let fileUrl: string | null = null;
+    let base64Content: string | null = null;
+
+    if (formData.imageBase64) {
+      // Formato típico: data:image/jpeg;base64,/9j/4...
+      base64Content = formData.imageBase64.split(',')[1];
+      const match = formData.imageBase64.match(/data:image\/(.*?);base64/);
+      const ext = match ? match[1] : 'jpg';
+      const fileName = `comprobante-${Date.now()}.${ext}`;
+      
+      const filePath = path.join(process.cwd(), 'public', 'uploads', fileName);
+      fs.writeFileSync(filePath, Buffer.from(base64Content, 'base64'));
+      fileUrl = `/uploads/${fileName}`;
+    }
+
+    const messagesContent: any[] = [
+      { type: 'text', text: formData.inputOriginal }
+    ];
+
+    if (base64Content) {
+      messagesContent.push({ type: 'image', image: base64Content });
+    }
+
+    // 1. EL CEREBRO: Extraer la realidad usando Inteligencia Artificial
+    const { object } = await generateObject({
+      model: google('gemini-3.6-flash'), // Versión 2026
+      system: `Eres un asistente de extracción financiera experto. 
+      Tu objetivo es analizar un mensaje desestructurado y extraer los datos duros de un "Movimiento Económico".
+      Si recibes una imagen de un ticket o factura, actúa como un OCR inteligente. Extrae el importe total, la fecha, el proveedor y fusiónalo con las instrucciones del usuario.
+      Reglas estrictas para el tipo:
+      - Si representa salida de dinero para operar -> "GASTO"
+      - Si representa entrada de dinero -> "VENTA"
+      Reglas estrictas para el importe y el IVA:
+      - Extrae el Total (importe), el Subtotal y el IVA. 
+      - REGLA DE ORO FISCAL 1: Si la imagen es una Factura (CFDI), extrae los montos exactos tal cual vienen impresos.
+      - REGLA DE ORO FISCAL 2: Si NO hay imagen de CFDI y el usuario NO menciona la palabra "factura", asume que el gasto no es deducible: IVA es nulo/0, Subtotal es nulo/0, y toma el Total como absoluto.
+      - REGLA DE ORO FISCAL 3 (CALCULO CIEGO): Si el usuario dice que "es con factura" o "tiene IVA" pero NO hay imagen, ESTÁS OBLIGADO a calcular el Subtotal y el IVA matemáticamente.
+      
+      REGLAS ESTRICTAS DE DESGLOSE DE ARTÍCULOS (SKUs):
+      - ESTÁS OBLIGADO a llenar el arreglo 'conceptos' siempre que el usuario mencione productos físicos o servicios. NUNCA lo dejes vacío.
+      - Si el usuario menciona múltiples productos de diferentes proveedores o naturalezas, sepáralos en múltiples 'movimientos'. Si los compró en la misma tienda, ponlos como múltiples 'conceptos' dentro de un solo 'movimiento'.
+      - HAZ LA MATEMÁTICA CORRECTA: Si el usuario dice "2 bidones a 640 cada uno", la 'cantidad' es 2, 'precioUnitario' es 640, y el 'importeTotal' de esa línea es 1280.
+      - El 'importe' del movimiento DEBE coincidir con la suma exacta de los 'importeTotal' de todos sus conceptos.
+      
+      TABLA DE EXCEPCIONES FISCALES (MÉXICO) PARA CALCULO CIEGO:
+      Antes de calcular el IVA a ciegas, clasifica los "conceptos" que identificaste contra esta tabla:
+      1. Gasolina/Combustible: Contiene IEPS. Aproxima así: Subtotal = Total * 0.85, IVA = Total * 0.13. (Tasa: "16% Especial")
+      2. Alimentos frescos (frutas, verduras, carnes), Medicinas y Libros: Tasa 0% (IVA = 0, Subtotal = Total. Tasa: "0%")
+      3. Honorarios médicos: Exentos (IVA = 0, Subtotal = Total. Tasa: "EXENTO")
+      4. Otros productos generales: Tasa estándar 16% (Total / 1.16 = Subtotal, Total - Subtotal = IVA. Tasa: "16%")
+      
+      REGLAS DE CONTEXTO (NEGOCIO VS PERSONAL):
+      - Todo movimiento pertenece a un 'contexto'. Puede ser 'NEGOCIO' o 'PERSONAL'.
+      - Si el usuario dice que es para la casa, gasto familiar, personal, o algo que claramente no es de la empresa, márcalo como 'PERSONAL'.
+      - Si no dice nada, o si es materia prima, mantenimiento de la empresa, inventario, etc., márcalo por defecto como 'NEGOCIO'.`,
+      messages: [
+        {
+          role: 'user',
+          content: messagesContent
+        }
+      ],
+      schema: z.object({
+        movimientos: z.array(z.object({
+          tipo: z.string().describe('El tipo de movimiento deducido, preferiblemente GASTO o VENTA.'),
+          importe: z.number().describe('El valor monetario TOTAL del movimiento (incluyendo impuestos).'),
+          subtotal: z.number().optional().describe('El valor antes de impuestos, si aplica.'),
+          iva: z.number().optional().describe('El monto del impuesto (IVA).'),
+          tasaIva: z.string().optional().describe('La tasa de IVA aplicada, ej. "16%", "8%", "0%", o "EXENTO".'),
+          contexto: z.enum(['NEGOCIO', 'PERSONAL']).describe('El contexto o entorno del gasto. NEGOCIO por defecto, PERSONAL si es explícitamente familiar o de casa.'),
+          categoria: z.enum(['ALIMENTOS', 'TRANSPORTE', 'SALUD', 'OFICINA', 'INVENTARIO', 'HONORARIOS', 'MANTENIMIENTO', 'OTROS']).describe('Categoriza el gasto según su naturaleza.'),
+          contraparte: z.string().optional().describe('El nombre de la tienda, proveedor o cliente.'),
+          conceptos: z.array(z.object({
+            cantidad: z.number().describe('La cantidad adquirida del producto.'),
+            descripcion: z.string().describe('El nombre o descripción del producto o servicio.'),
+            precioUnitario: z.number().describe('El precio por unidad.'),
+            importeTotal: z.number().describe('El importe total por esta línea (cantidad * precio unitario).')
+          })).describe('OBLIGATORIO: Arreglo de artículos adquiridos. NUNCA lo omitas. Si no hay productos, devuelve un arreglo vacío [].'),
+        })).describe('Lista de movimientos económicos identificados en el mensaje.')
+      }),
+    });
+
+    // 2. LA MEMORIA: Guardar la realidad estructurada en la Base de Datos
+    const savedMovimientos = [];
+    
+    for (const mov of object.movimientos) {
+      const isOperador = session.usuario.rol === 'OPERADOR';
+      const finalContext = isOperador ? 'NEGOCIO' : mov.contexto;
+
+      const movimiento = await prisma.movimiento.create({
+        data: {
+          contribuyenteId: 'tenant-123', // Hardcoded for this MVP prototype
+          usuarioId: session.usuario.id,
+          tipo: mov.tipo.toUpperCase(),
+          importe: mov.importe,
+          subtotal: mov.subtotal || null,
+          iva: mov.iva || null,
+          tasaIva: mov.tasaIva || null,
+          contexto: finalContext,
+          categoria: mov.categoria,
+          fechaOcurrencia: new Date(),
+          descripcionOriginal: formData.inputOriginal, // Conservamos el mensaje original sucio por auditoría
+          estado: fileUrl ? 'COMPROBADO' : 'PENDIENTE_COMPROBANTE', // Mágicamente validado si hay ticket
+          contraparteNombre: mov.contraparte || null,
+          comprobantes: fileUrl ? {
+            create: {
+              tipo: 'TICKET_IMAGEN',
+              url: fileUrl,
+              datosExtraidos: JSON.stringify(mov),
+              confianzaIA: 0.95
+            }
+          } : undefined,
+          conceptos: mov.conceptos?.length ? {
+            create: mov.conceptos.map((c: any) => ({
+              cantidad: c.cantidad,
+              descripcion: c.descripcion,
+              precioUnitario: c.precioUnitario,
+              importeTotal: c.importeTotal
+            }))
+          } : undefined
+        }
+      });
+      savedMovimientos.push(movimiento);
+    }
+    
+    return { success: true, data: savedMovimientos, ia_extraction: object }
+  } catch (error: any) {
+    console.error('Error creando movimiento con IA:', error)
+    return { success: false, error: 'No pude procesar la solicitud. ' + error.message }
+  }
+}

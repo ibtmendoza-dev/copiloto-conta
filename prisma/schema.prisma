@@ -1,0 +1,87 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Movimiento {
+  id                   String   @id @default(uuid())
+  
+  // -- Los Invariantes (Obligatorios) --
+  contribuyenteId      String   // A quién pertenece (Multi-tenant)
+  tipo                 String   // Enum en App: COMPRA, VENTA, GASTO, PAGO, COBRO, etc.
+  importe              Decimal  // El valor numérico exacto (Total)
+  subtotal             Decimal? // El valor antes de impuestos
+  iva                  Decimal? // El monto del impuesto
+  tasaIva              String?  // Ej: "16%", "8%", "0%", "EXENTO"
+  moneda               String   @default("MXN")
+  fechaOcurrencia      DateTime // Cuándo pasó en la vida real
+  
+  // -- Auditoría y Origen --
+  descripcionOriginal  String   // Ej. "Compré verduras por $850" (Para saber de dónde salió)
+  estado               String   @default("REGISTRADO") // REGISTRADO, PENDIENTE_COMPROBANTE, COMPROBADO, CORREGIDO, CANCELADO
+  
+  // -- Datos Opcionales (El copiloto los llenará con el tiempo) --
+  categoria            String?  
+  contexto             String   @default("NEGOCIO") // "NEGOCIO" o "PERSONAL"
+  contraparteNombre    String?  
+  metodoPagoId         String?  
+  
+  // -- Relaciones --
+  usuarioId            String?
+  usuario              Usuario?      @relation(fields: [usuarioId], references: [id])
+  comprobantes         Comprobante[]
+  conceptos            Concepto[]
+  
+  // -- Metadatos del Sistema --
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+}
+
+model Usuario {
+  id          String       @id @default(uuid())
+  email       String       @unique
+  password    String
+  nombre      String
+  rol         String       @default("OPERADOR") // ADMIN o OPERADOR
+  movimientos Movimiento[]
+  sesiones    Session[]
+}
+
+model Session {
+  id        String   @id @default(uuid())
+  usuarioId String
+  usuario   Usuario  @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+}
+
+model Comprobante {
+  id                   String   @id @default(uuid())
+  movimientoId         String
+  movimiento           Movimiento @relation(fields: [movimientoId], references: [id], onDelete: Cascade)
+  
+  tipo                 String   // TICKET_IMAGEN, FACTURA_XML, RECIBO_PDF
+  url                  String   // Ruta local en public/uploads o URL en S3
+  
+  // Datos extraídos directamente del comprobante (OCR / XML Parsing)
+  datosExtraidos       String?  // JSON string con los datos en crudo que leyó la IA
+  confianzaIA          Decimal? // 0.0 a 1.0
+  
+  createdAt            DateTime @default(now())
+}
+
+model Concepto {
+  id                   String   @id @default(uuid())
+  movimientoId         String
+  movimiento           Movimiento @relation(fields: [movimientoId], references: [id], onDelete: Cascade)
+  
+  cantidad             Decimal
+  descripcion          String
+  precioUnitario       Decimal?
+  importeTotal         Decimal
+  
+  createdAt            DateTime @default(now())
+}
