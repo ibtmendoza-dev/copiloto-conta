@@ -195,11 +195,14 @@ export default function CopilotChat() {
 
         contentStr += `La información ya es inmutable en tu Motor de Realidad.`;
 
-        // El movimiento contable se guardó, pero el envío al inventario pudo fallar.
-        // Si falló, hay que decirlo aquí y no dejar que pase por bueno.
-        if (result.fallosInventario?.length) {
-          contentStr += `\n\n⚠️ **El inventario NO se actualizó** (${result.fallosInventario.length} entrada(s)). El movimiento contable sí quedó registrado.\n`;
-          contentStr += result.fallosInventario.map((f: any) => `  - ${f.motivo}`).join('\n');
+        // El movimiento contable se guardó, pero alguna de las cosas que lo
+        // acompañan pudo fallar: la imagen del comprobante, el envío al
+        // inventario. Si falló, hay que decirlo aquí y no dejar que pase por
+        // bueno — un fallo que solo se ve en los registros del servidor es un
+        // fallo del que nadie se entera.
+        if (result.avisos?.length) {
+          contentStr += `\n\n⚠️ **El movimiento contable quedó registrado, pero:**\n`;
+          contentStr += result.avisos.map((a: any) => `  - ${a.motivo}`).join('\n');
         }
 
         const responseMessage = {

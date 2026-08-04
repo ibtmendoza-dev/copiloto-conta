@@ -8,27 +8,63 @@ import fs from 'fs'
 import path from 'path'
 import { getSession } from '@/lib/auth'
 import { dbFirestore } from '@/lib/firebase'
+import { put } from '@vercel/blob'
 
 export async function createMovimiento(formData: { inputOriginal: string, imageBase64?: string }) {
   try {
     const session = await getSession();
     if (!session) throw new Error('No autorizado');
 
+    // Todo lo que salió mal sin llegar a impedir el registro contable. Se
+    // devuelve al cliente para que lo diga en pantalla: un fallo que solo
+    // aparece en los registros del servidor es un fallo que nadie ve.
+    const avisos: { tipo: string, motivo: string }[] = [];
+
     let fileUrl: string | null = null;
     let base64Content: string | null = null;
     let mediaType: string = 'image/jpeg';
 
     if (formData.imageBase64) {
-      // Vercel es un entorno serverless (Read-Only).
-      // En lugar de guardar en disco, guardamos el Base64 directamente en la DB.
-      // (Para producción real a escala, usaríamos Amazon S3 o Vercel Blob)
       base64Content = formData.imageBase64.split(',')[1];
-      fileUrl = formData.imageBase64; // Guardamos el data URI completo en la BD
 
       // El data URI empieza por "data:image/png;base64,". De ahí sacamos el tipo
       // real; si viniera sin cabecera, nos quedamos con el valor por defecto.
       const tipoDeclarado = formData.imageBase64.match(/^data:([^;,]+)[;,]/)?.[1];
       if (tipoDeclarado) mediaType = tipoDeclarado;
+
+      // La imagen va a Vercel Blob y en la base solo queda su enlace. Antes se
+      // guardaba el data URI completo dentro de `Comprobante.url`: funcionaba,
+      // pero metía las fotos --el dato menos crítico-- en la misma cuota que
+      // los movimientos contables, que son el más crítico. Al agotarse el
+      // espacio no se habría quedado sin sitio el álbum de fotos: se habría
+      // quedado sin sitio la contabilidad.
+      //
+      // La imagen ya llega comprimida desde el navegador (page.tsx la
+      // redimensiona a 1200px y la pasa a JPEG al 70%), así que aquí no hay
+      // nada más que reducir.
+      try {
+        const extension = (mediaType.split('/')[1] || 'jpg').replace(/[^a-z0-9]/gi, '');
+        // `private`: un comprobante de compra no debe poder verlo cualquiera
+        // que tenga el enlace. Leerlo mas adelante exigira credenciales
+        // (`get(pathname, { access: 'private' })`), asi que la pantalla que
+        // algun dia muestre los comprobantes NO podra apuntar un <img> a esta
+        // direccion directamente: tendra que pedirla al servidor.
+        const blob = await put(
+          `comprobantes/${session.usuario.id}/${Date.now()}.${extension}`,
+          Buffer.from(base64Content, 'base64'),
+          { access: 'private', contentType: mediaType, addRandomSuffix: true }
+        );
+        fileUrl = blob.url;
+      } catch (blobError: any) {
+        // Sin comprobante, pero el movimiento contable se registra igual: el
+        // importe y la descripción son el dato que no se puede perder. Lo que
+        // no se hace es callarlo.
+        console.error("❌ Error al subir el comprobante a Vercel Blob:", blobError);
+        avisos.push({
+          tipo: 'COMPROBANTE',
+          motivo: `No se pudo guardar la imagen del comprobante: ${blobError?.message ?? String(blobError)}`
+        });
+      }
     }
 
     const messagesContent: any[] = [
@@ -100,10 +136,6 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
     // 2. LA MEMORIA: Guardar la realidad estructurada en la Base de Datos
     const savedMovimientos = [];
 
-    // El puente a Firestore no debe tumbar el guardado contable, pero tampoco
-    // puede fallar en silencio: acumulamos aqui lo que salio mal para
-    // devolverlo al cliente junto con el resultado.
-    const fallosInventario: { descripcion: string, motivo: string }[] = [];
 
     for (const mov of object.movimientos) {
       const isOperador = session.usuario.rol === 'OPERADOR';
@@ -175,16 +207,16 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
             console.error("❌ Error al inyectar JSON a Firebase:", firebaseError);
             // No detenemos el flujo principal porque el guardado contable (SQLite/Postgres) sí fue exitoso,
             // pero sí avisamos de que el inventario no quedó actualizado.
-            fallosInventario.push({
-              descripcion: formData.inputOriginal,
-              motivo: firebaseError?.message ?? String(firebaseError)
+            avisos.push({
+              tipo: 'INVENTARIO',
+              motivo: `El inventario no se actualizó: ${firebaseError?.message ?? String(firebaseError)}`
             });
           }
         } else {
           console.error("❌ Firestore no está configurado: no se inyectó la entrada de almacén");
-          fallosInventario.push({
-            descripcion: formData.inputOriginal,
-            motivo: 'Firestore no está configurado en este despliegue'
+          avisos.push({
+            tipo: 'INVENTARIO',
+            motivo: 'El inventario no se actualizó: Firestore no está configurado en este despliegue'
           });
         }
       }
@@ -192,7 +224,7 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
       savedMovimientos.push(movimiento);
     }
     
-    return { success: true, data: savedMovimientos, ia_extraction: object, fallosInventario }
+    return { success: true, data: savedMovimientos, ia_extraction: object, avisos }
   } catch (error: any) {
     console.error('Error creando movimiento con IA:', error)
     return { success: false, error: 'No pude procesar la solicitud. ' + error.message }
