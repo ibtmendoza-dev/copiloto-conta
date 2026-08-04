@@ -37,6 +37,7 @@ model Movimiento {
   conceptos            Concepto[]
   
   // -- Metadatos del Sistema --
+  idempotencyKey       String?  @unique
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 }
@@ -71,6 +72,86 @@ model Comprobante {
   confianzaIA          Decimal? // 0.0 a 1.0
   
   createdAt            DateTime @default(now())
+}
+
+// ============================================================
+// EL LIBRO DE DINERO
+// Ver docs/DISENO-libro-de-dinero.md en el repositorio de la plataforma.
+//
+// Las tres tablas de abajo responden la pregunta que `Movimiento` no puede
+// responder: "cuanto hay". Un Movimiento dice cuanto se gasto, no de donde
+// salio, y sin la contrapartida no existe el concepto de saldo.
+//
+// `Movimiento` NO se sustituye: se queda como capa de captura --el texto
+// original, el comprobante, lo que dedujo la inteligencia artificial-- y el
+// Asiento se le añade al lado, enlazado por `referenciaOrigen`.
+// ============================================================
+
+/// Donde esta el dinero o por donde entra y sale.
+model Cuenta {
+  id               String   @id @default(uuid())
+  contribuyenteId  String
+
+  nombre           String   // "Caja Centro", "Banco BBVA", "Cuenta corriente del dueño"
+  tipo             String   // ACTIVO | PASIVO | INGRESO | GASTO | CAPITAL
+  moneda           String   @default("MXN")
+  activa           Boolean  @default(true)
+
+  /// Identificador del punto de venta cuya caja representa esta cuenta, en la
+  /// plataforma de operacion. Es la costura que permite que el cierre de una
+  /// conciliacion sepa a que cuenta apuntar. Nulo en las que no son de un PDV.
+  pdvIdExterno     String?
+
+  apuntes          Apunte[]
+  createdAt        DateTime @default(now())
+
+  @@unique([contribuyenteId, nombre])
+}
+
+/// Un hecho economico completo. No se edita ni se borra nunca: un error se
+/// corrige con un asiento nuevo que invierte al anterior (invariante 2 del
+/// diseño). Por eso no hay `updatedAt`.
+model Asiento {
+  id               String   @id @default(uuid())
+  contribuyenteId  String
+
+  fechaOcurrencia  DateTime // Cuando paso en la vida real
+  descripcion      String
+
+  origen           String   // COPILOTO | CONCILIACION | MANUAL
+  /// Identificador del hecho en el sistema de origen. El par con `origen` es
+  /// unico: reenviar el mismo cierre de turno --por reintento, por error
+  /// humano, por reproceso-- no puede producir dos asientos. Es la unica
+  /// defensa que funciona sin coordinacion entre los dos sistemas.
+  referenciaOrigen String?
+
+  /// PROPUESTO mientras el importe lo dedujo la inteligencia artificial de un
+  /// texto libre; FIRME cuando una persona lo confirmo. SOLO LOS FIRME SUMAN
+  /// AL SALDO: un libro oficial cuyos importes nunca miro nadie no es oficial.
+  estado           String   @default("PROPUESTO")
+
+  apuntes          Apunte[]
+  createdAt        DateTime @default(now())
+
+  @@unique([origen, referenciaOrigen])
+  @@index([fechaOcurrencia])
+}
+
+/// Cada lado del hecho. Exactamente uno de `debe` y `haber` es mayor que cero,
+/// y la suma de los `debe` de un asiento es igual a la de sus `haber`.
+model Apunte {
+  id         String   @id @default(uuid())
+  asientoId  String
+  asiento    Asiento  @relation(fields: [asientoId], references: [id])
+  cuentaId   String
+  cuenta     Cuenta   @relation(fields: [cuentaId], references: [id])
+
+  /// Decimal, nunca flotante: en dinero, la suma de muchos flotantes deriva.
+  debe       Decimal  @default(0) @db.Decimal(14, 2)
+  haber      Decimal  @default(0) @db.Decimal(14, 2)
+
+  @@index([cuentaId])
+  @@index([asientoId])
 }
 
 model Concepto {

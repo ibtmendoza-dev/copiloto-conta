@@ -10,56 +10,26 @@ import { getSession } from '@/lib/auth'
 import { dbFirestore } from '@/lib/firebase'
 import { put } from '@vercel/blob'
 
-export async function createMovimiento(formData: { inputOriginal: string, imageBase64?: string }) {
+export async function createMovimiento(formData: { inputOriginal: string, imageBase64?: string, clientMessageId?: string }) {
   try {
     const session = await getSession();
     if (!session) throw new Error('No autorizado');
 
-    // Todo lo que salió mal sin llegar a impedir el registro contable. Se
-    // devuelve al cliente para que lo diga en pantalla: un fallo que solo
-    // aparece en los registros del servidor es un fallo que nadie ve.
     const avisos: { tipo: string, motivo: string }[] = [];
-
     let fileUrl: string | null = null;
     let base64Content: string | null = null;
     let mediaType: string = 'image/jpeg';
 
-    // `descripcionOriginal` existe para poder reconstruir de donde salio un
-    // registro: es el mensaje que escribio la persona. Cuando solo se manda la
-    // foto de un ticket, sin texto, quedaba vacio -- y meses despues ese
-    // movimiento no tiene mas contexto que los nombres de los productos que
-    // dedujo la inteligencia artificial. Se deja constancia de como se capturo.
-    //
-    // Ojo: esto NO toca lo que se le manda al modelo (`messagesContent` sigue
-    // usando `formData.inputOriginal` tal cual). Es solo lo que se guarda.
     const descripcionOriginal = formData.inputOriginal?.trim()
       || (formData.imageBase64 ? '(Capturado desde la imagen del comprobante, sin texto)' : '');
 
     if (formData.imageBase64) {
       base64Content = formData.imageBase64.split(',')[1];
-
-      // El data URI empieza por "data:image/png;base64,". De ahí sacamos el tipo
-      // real; si viniera sin cabecera, nos quedamos con el valor por defecto.
       const tipoDeclarado = formData.imageBase64.match(/^data:([^;,]+)[;,]/)?.[1];
       if (tipoDeclarado) mediaType = tipoDeclarado;
 
-      // La imagen va a Vercel Blob y en la base solo queda su enlace. Antes se
-      // guardaba el data URI completo dentro de `Comprobante.url`: funcionaba,
-      // pero metía las fotos --el dato menos crítico-- en la misma cuota que
-      // los movimientos contables, que son el más crítico. Al agotarse el
-      // espacio no se habría quedado sin sitio el álbum de fotos: se habría
-      // quedado sin sitio la contabilidad.
-      //
-      // La imagen ya llega comprimida desde el navegador (page.tsx la
-      // redimensiona a 1200px y la pasa a JPEG al 70%), así que aquí no hay
-      // nada más que reducir.
       try {
         const extension = (mediaType.split('/')[1] || 'jpg').replace(/[^a-z0-9]/gi, '');
-        // `private`: un comprobante de compra no debe poder verlo cualquiera
-        // que tenga el enlace. Leerlo mas adelante exigira credenciales
-        // (`get(pathname, { access: 'private' })`), asi que la pantalla que
-        // algun dia muestre los comprobantes NO podra apuntar un <img> a esta
-        // direccion directamente: tendra que pedirla al servidor.
         const blob = await put(
           `comprobantes/${session.usuario.id}/${Date.now()}.${extension}`,
           Buffer.from(base64Content, 'base64'),
@@ -67,9 +37,6 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
         );
         fileUrl = blob.url;
       } catch (blobError: any) {
-        // Sin comprobante, pero el movimiento contable se registra igual: el
-        // importe y la descripción son el dato que no se puede perder. Lo que
-        // no se hace es callarlo.
         console.error("❌ Error al subir el comprobante a Vercel Blob:", blobError);
         avisos.push({
           tipo: 'COMPROBANTE',
@@ -86,7 +53,6 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
       messagesContent.push({ type: 'file', mediaType, data: base64Content });
     }
 
-    // 1. EL CEREBRO: Extraer la realidad usando Inteligencia Artificial
     const { object } = await generateObject({
       model: google('gemini-3.6-flash'), // Versión 2026
       system: `Eres un asistente de extracción financiera experto. 
@@ -144,48 +110,66 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
       }),
     });
 
-    // 2. LA MEMORIA: Guardar la realidad estructurada en la Base de Datos
     const savedMovimientos = [];
 
-
+    let index = 0;
     for (const mov of object.movimientos) {
       const isOperador = session.usuario.rol === 'OPERADOR';
       const finalContext = isOperador ? 'NEGOCIO' : mov.contexto;
+      const key = formData.clientMessageId ? `${formData.clientMessageId}-${index}` : undefined;
 
-      const movimiento = await prisma.movimiento.create({
-        data: {
-          contribuyenteId: 'tenant-123',
-          usuarioId: session.usuario.id,
-          tipo: mov.tipo.toUpperCase(),
-          importe: mov.importe,
-          subtotal: mov.subtotal || null,
-          iva: mov.iva || null,
-          tasaIva: mov.tasaIva || null,
-          contexto: finalContext,
-          categoria: mov.categoria,
-          fechaOcurrencia: new Date(),
-          descripcionOriginal,
-          estado: fileUrl ? 'COMPROBADO' : 'PENDIENTE_COMPROBANTE',
-          contraparteNombre: mov.contraparte || null,
-          comprobantes: fileUrl ? {
-            create: {
-              tipo: 'TICKET_IMAGEN',
-              url: fileUrl,
-              datosExtraidos: JSON.stringify(mov),
-              confianzaIA: 0.95
+      let movimiento;
+      try {
+        movimiento = await prisma.movimiento.create({
+          data: {
+            idempotencyKey: key,
+            contribuyenteId: 'tenant-123',
+            usuarioId: session.usuario.id,
+            tipo: mov.tipo.toUpperCase(),
+            importe: mov.importe,
+            subtotal: mov.subtotal || null,
+            iva: mov.iva || null,
+            tasaIva: mov.tasaIva || null,
+            contexto: finalContext,
+            categoria: mov.categoria,
+            fechaOcurrencia: new Date(),
+            descripcionOriginal,
+            estado: fileUrl ? 'COMPROBADO' : 'PENDIENTE_COMPROBANTE',
+            contraparteNombre: mov.contraparte || null,
+            comprobantes: fileUrl ? {
+              create: {
+                tipo: 'TICKET_IMAGEN',
+                url: fileUrl,
+                datosExtraidos: JSON.stringify(mov),
+                confianzaIA: 0.95
+              }
+            } : undefined,
+            conceptos: {
+              create: mov.articulos.map((art: any) => ({
+                cantidad: art.cantidad,
+                descripcion: art.descripcion,
+                precioUnitario: art.precioUnitario,
+                importeTotal: art.importeTotal,
+              }))
             }
-          } : undefined,
-          conceptos: {
-            create: mov.articulos.map((art: any) => ({
-              cantidad: art.cantidad,
-              descripcion: art.descripcion,
-              precioUnitario: art.precioUnitario,
-              importeTotal: art.importeTotal,
-            }))
+          },
+          include: { conceptos: true }
+        });
+      } catch (error: any) {
+        if (error.code === 'P2002' && key) {
+          console.log(`Idempotency key hit for ${key}. Skipping duplicate.`);
+          const existing = await prisma.movimiento.findUnique({
+             where: { idempotencyKey: key },
+             include: { conceptos: true }
+          });
+          if (existing) {
+             savedMovimientos.push(existing);
+             index++;
+             continue; // Saltamos a la siguiente iteracion para no inyectar a Firebase dos veces
           }
-        },
-        include: { conceptos: true }
-      });
+        }
+        throw error;
+      }
 
       // ==========================================
       // EL PUENTE FIREBASE (Inyección Directa)
@@ -193,9 +177,6 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
       if (movimiento.contexto === 'NEGOCIO' && movimiento.categoria === 'INVENTARIO') {
         if (dbFirestore) {
           try {
-            // Firestore solo acepta valores primitivos, objetos planos y fechas.
-            // Los campos Decimal de Prisma son instancias de clase y los rechaza,
-            // igual que rechaza `undefined`. Convertimos ambos casos aqui.
             const aNumero = (valor: any) =>
               valor === null || valor === undefined ? null : Number(valor);
 
@@ -216,8 +197,6 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
             console.log("✅ JSON inyectado exitosamente a Firebase Firestore");
           } catch (firebaseError: any) {
             console.error("❌ Error al inyectar JSON a Firebase:", firebaseError);
-            // No detenemos el flujo principal porque el guardado contable (SQLite/Postgres) sí fue exitoso,
-            // pero sí avisamos de que el inventario no quedó actualizado.
             avisos.push({
               tipo: 'INVENTARIO',
               motivo: `El inventario no se actualizó: ${firebaseError?.message ?? String(firebaseError)}`
@@ -233,6 +212,7 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
       }
 
       savedMovimientos.push(movimiento);
+      index++;
     }
     
     return { success: true, data: savedMovimientos, ia_extraction: object, avisos }

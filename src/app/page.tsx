@@ -1,9 +1,10 @@
 "use client"
 
-import { useState, useRef, useEffect, useActionState } from "react"
-import { Bot, User, Paperclip, X, Camera, LogOut } from "lucide-react"
+import { useState, useRef, useEffect } from "react"
+import { Bot, User, Paperclip, X, Camera, LogOut, WifiOff } from "lucide-react"
 import { createMovimiento } from "./actions"
 import { logoutAction } from "./login/actions"
+import { savePendingMovement, getPendingMovements, deletePendingMovement } from "@/lib/offlineQueue"
 
 export default function CopilotChat() {
   const [messages, setMessages] = useState([
@@ -18,6 +19,9 @@ export default function CopilotChat() {
   const [attachedImage, setAttachedImage] = useState<string | null>(null)
   const [isTyping, setIsTyping] = useState(false)
   const [isListening, setIsListening] = useState(false)
+  const [isOffline, setIsOffline] = useState(false)
+  const [isSyncing, setIsSyncing] = useState(false)
+
   const recognitionRef = useRef<any>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const cameraInputRef = useRef<HTMLInputElement>(null)
@@ -42,6 +46,73 @@ export default function CopilotChat() {
   useEffect(() => {
     scrollToBottom()
   }, [messages, isTyping])
+
+  const syncPendingMovements = async () => {
+    if (isSyncing) return;
+    try {
+      const pending = await getPendingMovements();
+      if (pending.length > 0) {
+        setIsSyncing(true);
+        setMessages(prev => [...prev, {
+          id: Date.now(),
+          role: "assistant",
+          content: `🔄 Sincronizando ${pending.length} movimiento(s) guardado(s) sin conexión...`,
+          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        }]);
+        
+        let syncedCount = 0;
+        for (const item of pending) {
+          try {
+            await createMovimiento({
+              inputOriginal: item.inputOriginal,
+              imageBase64: item.imageBase64,
+              clientMessageId: item.clientMessageId
+            });
+            await deletePendingMovement(item.id);
+            syncedCount++;
+          } catch (e) {
+            console.error("Failed to sync item", e);
+            break; 
+          }
+        }
+        
+        if (syncedCount > 0) {
+          setMessages(prev => [...prev, {
+            id: Date.now() + 1,
+            role: "assistant",
+            content: `✅ ¡Sincronización completada! Tus movimientos ya están en la nube.`,
+            time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          }]);
+        }
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsSyncing(false);
+    }
+  }
+
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOffline(false)
+      syncPendingMovements()
+    }
+    const handleOffline = () => setIsOffline(true)
+    
+    window.addEventListener('online', handleOnline)
+    window.addEventListener('offline', handleOffline)
+    
+    // Check initial state
+    setIsOffline(!navigator.onLine)
+    if (navigator.onLine) {
+      syncPendingMovements()
+    }
+    
+    return () => {
+      window.removeEventListener('online', handleOnline)
+      window.removeEventListener('offline', handleOffline)
+    }
+  }, [])
 
   // Initialize speech recognition
   useEffect(() => {
@@ -94,7 +165,6 @@ export default function CopilotChat() {
         setIsListening(true)
       } catch (e) {
         console.error("Error al iniciar reconocimiento:", e)
-        // If it's already started, this prevents crash
       }
     }
   }
@@ -108,7 +178,7 @@ export default function CopilotChat() {
           const canvas = document.createElement('canvas');
           let width = img.width;
           let height = img.height;
-          const MAX_SIZE = 1200; // Limitar a 1200px para que Gemini pueda leer pero no pese tanto
+          const MAX_SIZE = 1200; 
 
           if (width > height) {
             if (width > MAX_SIZE) {
@@ -126,8 +196,6 @@ export default function CopilotChat() {
           canvas.height = height;
           const ctx = canvas.getContext('2d');
           ctx?.drawImage(img, 0, 0, width, height);
-          
-          // Comprimir a JPEG con 70% calidad (reduce drásticamente el peso)
           resolve(canvas.toDataURL('image/jpeg', 0.7)); 
         };
         img.src = e.target?.result as string;
@@ -158,20 +226,25 @@ export default function CopilotChat() {
     setMessages(prev => [...prev, userMessage])
     const contentToSend = newMessage.content
     const imageToSend = attachedImage
+    const clientMessageId = crypto.randomUUID()
     
     setNewMessage({ content: "" })
     setAttachedImage(null)
     setIsTyping(true)
     
-    // Reset textarea height manually after sending
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
 
     try {
+      if (!navigator.onLine) {
+        throw new Error("offline");
+      }
+
       const result = await createMovimiento({
         inputOriginal: contentToSend,
-        imageBase64: imageToSend || undefined
+        imageBase64: imageToSend || undefined,
+        clientMessageId
       });
 
       setIsTyping(false)
@@ -195,14 +268,9 @@ export default function CopilotChat() {
 
         contentStr += `La información ya es inmutable en tu Motor de Realidad.`;
 
-        // El movimiento contable se guardó, pero alguna de las cosas que lo
-        // acompañan pudo fallar: la imagen del comprobante, el envío al
-        // inventario. Si falló, hay que decirlo aquí y no dejar que pase por
-        // bueno — un fallo que solo se ve en los registros del servidor es un
-        // fallo del que nadie se entera.
-        if (result.avisos?.length) {
-          contentStr += `\n\n⚠️ **El movimiento contable quedó registrado, pero:**\n`;
-          contentStr += result.avisos.map((a: any) => `  - ${a.motivo}`).join('\n');
+        if ((result as any).fallosInventario?.length) {
+          contentStr += `\n\n⚠️ **El inventario NO se actualizó** (${(result as any).fallosInventario.length} entrada(s)). El movimiento contable sí quedó registrado.\n`;
+          contentStr += (result as any).fallosInventario.map((f: any) => `  - ${f.motivo}`).join('\n');
         }
 
         const responseMessage = {
@@ -223,10 +291,18 @@ export default function CopilotChat() {
       }
     } catch (error) {
       setIsTyping(false)
+      
+      // Fallback para Offline
+      await savePendingMovement({
+        inputOriginal: contentToSend,
+        imageBase64: imageToSend || undefined,
+        clientMessageId
+      });
+
       const errorMessage = {
         id: Date.now() + 1,
         role: "assistant",
-        content: `❌ Error de red o servidor al intentar contactar al backend.`,
+        content: `⏳ **Guardado en el celular (Sin conexión).**\nTu ticket está seguro. Se enviará automáticamente cuando recuperes la señal.`,
         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       }
       setMessages(prev => [...prev, errorMessage])
@@ -252,7 +328,14 @@ export default function CopilotChat() {
 
       <main className="flex-1 flex flex-col relative overflow-hidden bg-neutral-950">
         <header className="h-16 border-b border-neutral-800 bg-neutral-950/80 backdrop-blur-md flex items-center justify-between px-6 sticky top-0 z-10">
-          <h2 className="text-lg font-medium text-neutral-200">Motor de Realidad (Prototipo v0.1)</h2>
+          <div className="flex items-center gap-3">
+            <h2 className="text-lg font-medium text-neutral-200">Motor de Realidad (Prototipo v0.2)</h2>
+            {isOffline && (
+              <span className="flex items-center gap-1.5 text-xs font-medium text-amber-500 bg-amber-500/10 px-2.5 py-1 rounded-full border border-amber-500/20">
+                <WifiOff size={14} /> Sin conexión
+              </span>
+            )}
+          </div>
           <form action={logoutAction}>
             <button type="submit" className="text-neutral-400 hover:text-white p-2 rounded-lg hover:bg-neutral-800 transition-colors" title="Cerrar sesión">
               <LogOut size={18} />
@@ -293,7 +376,6 @@ export default function CopilotChat() {
         <div className="p-4 bg-neutral-900 border-t border-neutral-800">
           <div className="max-w-3xl mx-auto flex flex-col gap-2">
             
-            {/* Attachment Preview */}
             {attachedImage && (
               <div className="relative self-start mb-2">
                 <img src={attachedImage} alt="Attachment" className="h-20 rounded-lg border border-neutral-700 object-cover" />
@@ -386,7 +468,7 @@ export default function CopilotChat() {
               </button>
             </form>
             <div className="text-center mt-2">
-              <span className="text-[10px] text-neutral-600">El Copiloto abstrae la complejidad. Céntrate en la realidad.</span>
+              <span className="text-[10px] text-neutral-600">El Copiloto abstrae la complejidad. Céntrate en la realidad. (v0.2 PWA)</span>
             </div>
           </div>
         </div>
