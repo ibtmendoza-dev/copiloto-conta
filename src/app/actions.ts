@@ -7,6 +7,7 @@ import { z } from 'zod'
 import fs from 'fs'
 import path from 'path'
 import { getSession } from '@/lib/auth'
+import { dbFirestore } from '@/lib/firebase'
 
 export async function createMovimiento(formData: { inputOriginal: string, imageBase64?: string }) {
   try {
@@ -52,13 +53,13 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
       - REGLA DE ORO FISCAL 3 (CALCULO CIEGO): Si el usuario dice que "es con factura" o "tiene IVA" pero NO hay imagen, ESTÁS OBLIGADO a calcular el Subtotal y el IVA matemáticamente.
       
       REGLAS ESTRICTAS DE DESGLOSE DE ARTÍCULOS (SKUs):
-      - ESTÁS OBLIGADO a llenar el arreglo 'conceptos' siempre que el usuario mencione productos físicos o servicios. NUNCA lo dejes vacío.
-      - Si el usuario menciona múltiples productos de diferentes proveedores o naturalezas, sepáralos en múltiples 'movimientos'. Si los compró en la misma tienda, ponlos como múltiples 'conceptos' dentro de un solo 'movimiento'.
+      - ESTÁS OBLIGADO a llenar el arreglo 'articulos' siempre que el usuario mencione productos físicos o servicios. NUNCA lo dejes vacío.
+      - Si el usuario menciona múltiples productos de diferentes proveedores o naturalezas, sepáralos en múltiples 'movimientos'. Si los compró en la misma tienda, ponlos como múltiples 'articulos' dentro de un solo 'movimiento'.
       - HAZ LA MATEMÁTICA CORRECTA: Si el usuario dice "2 bidones a 640 cada uno", la 'cantidad' es 2, 'precioUnitario' es 640, y el 'importeTotal' de esa línea es 1280.
-      - El 'importe' del movimiento DEBE coincidir con la suma exacta de los 'importeTotal' de todos sus conceptos.
+      - El 'importe' del movimiento DEBE coincidir con la suma exacta de los 'importeTotal' de todos sus articulos.
       
       TABLA DE EXCEPCIONES FISCALES (MÉXICO) PARA CALCULO CIEGO:
-      Antes de calcular el IVA a ciegas, clasifica los "conceptos" que identificaste contra esta tabla:
+      Antes de calcular el IVA a ciegas, clasifica los "articulos" que identificaste contra esta tabla:
       1. Gasolina/Combustible: Contiene IEPS. Aproxima así: Subtotal = Total * 0.85, IVA = Total * 0.13. (Tasa: "16% Especial")
       2. Alimentos frescos (frutas, verduras, carnes), Medicinas y Libros: Tasa 0% (IVA = 0, Subtotal = Total. Tasa: "0%")
       3. Honorarios médicos: Exentos (IVA = 0, Subtotal = Total. Tasa: "EXENTO")
@@ -84,7 +85,7 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
           contexto: z.enum(['NEGOCIO', 'PERSONAL']).describe('El contexto o entorno del gasto. NEGOCIO por defecto, PERSONAL si es explícitamente familiar o de casa.'),
           categoria: z.enum(['ALIMENTOS', 'TRANSPORTE', 'SALUD', 'OFICINA', 'INVENTARIO', 'HONORARIOS', 'MANTENIMIENTO', 'OTROS']).describe('Categoriza el gasto según su naturaleza.'),
           contraparte: z.string().optional().describe('El nombre de la tienda, proveedor o cliente.'),
-          conceptos: z.array(z.object({
+          articulos: z.array(z.object({
             cantidad: z.number().describe('La cantidad adquirida del producto.'),
             descripcion: z.string().describe('El nombre o descripción del producto o servicio.'),
             precioUnitario: z.number().describe('El precio por unidad.'),
@@ -103,7 +104,7 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
 
       const movimiento = await prisma.movimiento.create({
         data: {
-          contribuyenteId: 'tenant-123', // Hardcoded for this MVP prototype
+          contribuyenteId: 'tenant-123',
           usuarioId: session.usuario.id,
           tipo: mov.tipo.toUpperCase(),
           importe: mov.importe,
@@ -113,8 +114,8 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
           contexto: finalContext,
           categoria: mov.categoria,
           fechaOcurrencia: new Date(),
-          descripcionOriginal: formData.inputOriginal, // Conservamos el mensaje original sucio por auditoría
-          estado: fileUrl ? 'COMPROBADO' : 'PENDIENTE_COMPROBANTE', // Mágicamente validado si hay ticket
+          descripcionOriginal: formData.inputOriginal,
+          estado: fileUrl ? 'COMPROBADO' : 'PENDIENTE_COMPROBANTE',
           contraparteNombre: mov.contraparte || null,
           comprobantes: fileUrl ? {
             create: {
@@ -124,16 +125,46 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
               confianzaIA: 0.95
             }
           } : undefined,
-          conceptos: mov.conceptos?.length ? {
-            create: mov.conceptos.map((c: any) => ({
-              cantidad: c.cantidad,
-              descripcion: c.descripcion,
-              precioUnitario: c.precioUnitario,
-              importeTotal: c.importeTotal
+          conceptos: {
+            create: mov.articulos.map((art: any) => ({
+              cantidad: art.cantidad,
+              descripcion: art.descripcion,
+              precioUnitario: art.precioUnitario,
+              importeTotal: art.importeTotal,
             }))
-          } : undefined
-        }
+          }
+        },
+        include: { conceptos: true }
       });
+
+      // ==========================================
+      // EL PUENTE FIREBASE (Inyección Directa)
+      // ==========================================
+      if (movimiento.contexto === 'NEGOCIO' && movimiento.categoria === 'INVENTARIO') {
+        if (dbFirestore) {
+          try {
+            const payload = {
+              fechaOcurrencia: movimiento.fechaOcurrencia,
+              origen: "Copiloto Conta (Finanzas)",
+              totalGastado: movimiento.importe,
+              usuarioId: movimiento.usuarioId,
+              articulos: mov.articulos.map((art: any) => ({
+                cantidad: art.cantidad,
+                descripcion: art.descripcion,
+                precioUnitario: art.precioUnitario,
+                importeTotal: art.importeTotal,
+              }))
+            };
+            
+            await dbFirestore.collection('entradas_almacen').add(payload);
+            console.log("✅ JSON inyectado exitosamente a Firebase Firestore");
+          } catch (firebaseError) {
+            console.error("❌ Error al inyectar JSON a Firebase:", firebaseError);
+            // No detenemos el flujo principal porque el guardado contable (SQLite/Postgres) sí fue exitoso
+          }
+        }
+      }
+
       savedMovimientos.push(movimiento);
     }
     
