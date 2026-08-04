@@ -16,13 +16,19 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
 
     let fileUrl: string | null = null;
     let base64Content: string | null = null;
+    let mediaType: string = 'image/jpeg';
 
     if (formData.imageBase64) {
-      // Vercel es un entorno serverless (Read-Only). 
+      // Vercel es un entorno serverless (Read-Only).
       // En lugar de guardar en disco, guardamos el Base64 directamente en la DB.
       // (Para producción real a escala, usaríamos Amazon S3 o Vercel Blob)
       base64Content = formData.imageBase64.split(',')[1];
       fileUrl = formData.imageBase64; // Guardamos el data URI completo en la BD
+
+      // El data URI empieza por "data:image/png;base64,". De ahí sacamos el tipo
+      // real; si viniera sin cabecera, nos quedamos con el valor por defecto.
+      const tipoDeclarado = formData.imageBase64.match(/^data:([^;,]+)[;,]/)?.[1];
+      if (tipoDeclarado) mediaType = tipoDeclarado;
     }
 
     const messagesContent: any[] = [
@@ -30,7 +36,7 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
     ];
 
     if (base64Content) {
-      messagesContent.push({ type: 'image', image: base64Content });
+      messagesContent.push({ type: 'file', mediaType, data: base64Content });
     }
 
     // 1. EL CEREBRO: Extraer la realidad usando Inteligencia Artificial
@@ -93,7 +99,12 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
 
     // 2. LA MEMORIA: Guardar la realidad estructurada en la Base de Datos
     const savedMovimientos = [];
-    
+
+    // El puente a Firestore no debe tumbar el guardado contable, pero tampoco
+    // puede fallar en silencio: acumulamos aqui lo que salio mal para
+    // devolverlo al cliente junto con el resultado.
+    const fallosInventario: { descripcion: string, motivo: string }[] = [];
+
     for (const mov of object.movimientos) {
       const isOperador = session.usuario.rol === 'OPERADOR';
       const finalContext = isOperador ? 'NEGOCIO' : mov.contexto;
@@ -160,17 +171,28 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
             
             await dbFirestore.collection('entradas_almacen').add(payload);
             console.log("✅ JSON inyectado exitosamente a Firebase Firestore");
-          } catch (firebaseError) {
+          } catch (firebaseError: any) {
             console.error("❌ Error al inyectar JSON a Firebase:", firebaseError);
-            // No detenemos el flujo principal porque el guardado contable (SQLite/Postgres) sí fue exitoso
+            // No detenemos el flujo principal porque el guardado contable (SQLite/Postgres) sí fue exitoso,
+            // pero sí avisamos de que el inventario no quedó actualizado.
+            fallosInventario.push({
+              descripcion: formData.inputOriginal,
+              motivo: firebaseError?.message ?? String(firebaseError)
+            });
           }
+        } else {
+          console.error("❌ Firestore no está configurado: no se inyectó la entrada de almacén");
+          fallosInventario.push({
+            descripcion: formData.inputOriginal,
+            motivo: 'Firestore no está configurado en este despliegue'
+          });
         }
       }
 
       savedMovimientos.push(movimiento);
     }
     
-    return { success: true, data: savedMovimientos, ia_extraction: object }
+    return { success: true, data: savedMovimientos, ia_extraction: object, fallosInventario }
   } catch (error: any) {
     console.error('Error creando movimiento con IA:', error)
     return { success: false, error: 'No pude procesar la solicitud. ' + error.message }

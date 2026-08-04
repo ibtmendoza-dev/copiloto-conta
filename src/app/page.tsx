@@ -193,10 +193,19 @@ export default function CopilotChat() {
           contentStr += `**${index + 1}. ${mov.tipo} por $${mov.importe}** [${contextoIcon}] [🏷️ ${mov.categoria}] ${extraInfo}${ivaInfo}${conceptosInfo}\n  - **Estado:** ${mov.estado}\n\n`;
         });
 
+        contentStr += `La información ya es inmutable en tu Motor de Realidad.`;
+
+        // El movimiento contable se guardó, pero el envío al inventario pudo fallar.
+        // Si falló, hay que decirlo aquí y no dejar que pase por bueno.
+        if (result.fallosInventario?.length) {
+          contentStr += `\n\n⚠️ **El inventario NO se actualizó** (${result.fallosInventario.length} entrada(s)). El movimiento contable sí quedó registrado.\n`;
+          contentStr += result.fallosInventario.map((f: any) => `  - ${f.motivo}`).join('\n');
+        }
+
         const responseMessage = {
           id: Date.now() + 1,
           role: "assistant",
-          content: contentStr + `La información ya es inmutable en tu Motor de Realidad.`,
+          content: contentStr,
           time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         }
         setMessages(prev => [...prev, responseMessage])
