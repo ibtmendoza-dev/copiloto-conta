@@ -18,15 +18,11 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
     let base64Content: string | null = null;
 
     if (formData.imageBase64) {
-      // Formato típico: data:image/jpeg;base64,/9j/4...
+      // Vercel es un entorno serverless (Read-Only). 
+      // En lugar de guardar en disco, guardamos el Base64 directamente en la DB.
+      // (Para producción real a escala, usaríamos Amazon S3 o Vercel Blob)
       base64Content = formData.imageBase64.split(',')[1];
-      const match = formData.imageBase64.match(/data:image\/(.*?);base64/);
-      const ext = match ? match[1] : 'jpg';
-      const fileName = `comprobante-${Date.now()}.${ext}`;
-      
-      const filePath = path.join(process.cwd(), 'public', 'uploads', fileName);
-      fs.writeFileSync(filePath, Buffer.from(base64Content, 'base64'));
-      fileUrl = `/uploads/${fileName}`;
+      fileUrl = formData.imageBase64; // Guardamos el data URI completo en la BD
     }
 
     const messagesContent: any[] = [
