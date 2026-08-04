@@ -185,8 +185,8 @@ export default function CopilotChat() {
           const ivaInfo = mov.iva != null 
             ? `\n  - **Subtotal:** $${mov.subtotal} | **IVA (${mov.tasaIva}):** $${mov.iva}` 
             : '';
-          const conceptosInfo = extraction?.conceptos?.length 
-            ? `\n  - **Detalle de Artículos:**\n    - ` + extraction.conceptos.map((c: any) => `[${c.cantidad}x] ${c.descripcion} ($${c.importeTotal})`).join('\n    - ')
+          const conceptosInfo = extraction?.articulos?.length 
+            ? `\n  - **Detalle de Artículos:**\n    - ` + extraction.articulos.map((c: any) => `[${c.cantidad}x] ${c.descripcion} ($${c.importeTotal})`).join('\n    - ')
             : '';
           const contextoIcon = mov.contexto === 'PERSONAL' ? '🏠 PERSONAL' : '🏢 NEGOCIO';
             
