@@ -139,16 +139,22 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
       if (movimiento.contexto === 'NEGOCIO' && movimiento.categoria === 'INVENTARIO') {
         if (dbFirestore) {
           try {
+            // Firestore solo acepta valores primitivos, objetos planos y fechas.
+            // Los campos Decimal de Prisma son instancias de clase y los rechaza,
+            // igual que rechaza `undefined`. Convertimos ambos casos aqui.
+            const aNumero = (valor: any) =>
+              valor === null || valor === undefined ? null : Number(valor);
+
             const payload = {
               fechaOcurrencia: movimiento.fechaOcurrencia,
               origen: "Copiloto Conta (Finanzas)",
-              totalGastado: movimiento.importe,
+              totalGastado: aNumero(movimiento.importe),
               usuarioId: movimiento.usuarioId,
               articulos: mov.articulos.map((art: any) => ({
-                cantidad: art.cantidad,
-                descripcion: art.descripcion,
-                precioUnitario: art.precioUnitario,
-                importeTotal: art.importeTotal,
+                cantidad: aNumero(art.cantidad),
+                descripcion: art.descripcion ?? null,
+                precioUnitario: aNumero(art.precioUnitario),
+                importeTotal: aNumero(art.importeTotal),
               }))
             };
             
