@@ -42,9 +42,3 @@ next-env.d.ts
 
 /src/generated/prisma
 *.db
-# Scripts operativos con credenciales escritas en claro. update-users.js lleva
-# las contrasenas reales de las cuentas de produccion: si entra al historial de
-# git, queda ahi para siempre aunque se borre el archivo despues. Se quedan en
-# local a proposito.
-scripts/update-users.js
-scripts/reset-db.js
