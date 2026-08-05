@@ -1,7 +1,8 @@
 "use client"
 
 import { useState, useRef, useEffect } from "react"
-import { Bot, User, Paperclip, X, Camera, LogOut, WifiOff } from "lucide-react"
+import { Bot, User, Paperclip, X, Camera, LogOut, WifiOff, History } from "lucide-react"
+import Link from "next/link"
 import { createMovimiento } from "./actions"
 import { logoutAction } from "./login/actions"
 import { savePendingMovement, getPendingMovements, deletePendingMovement } from "@/lib/offlineQueue"
@@ -320,9 +321,9 @@ export default function CopilotChat() {
         </div>
         <div className="flex-1 overflow-y-auto p-4">
           <p className="text-xs text-neutral-500 font-semibold mb-3 uppercase tracking-wider">Historial</p>
-          <button className="w-full text-left px-3 py-2 text-sm bg-neutral-800 text-neutral-200 rounded-md truncate hover:bg-neutral-700 transition-colors border border-neutral-700">
+          <Link href="/historial" className="block w-full text-left px-3 py-2 text-sm bg-neutral-800 text-neutral-200 rounded-md truncate hover:bg-neutral-700 transition-colors border border-neutral-700">
             Registro de la realidad
-          </button>
+          </Link>
         </div>
       </aside>
 
@@ -336,11 +337,16 @@ export default function CopilotChat() {
               </span>
             )}
           </div>
-          <form action={logoutAction}>
-            <button type="submit" className="text-neutral-400 hover:text-white p-2 rounded-lg hover:bg-neutral-800 transition-colors" title="Cerrar sesión">
-              <LogOut size={18} />
-            </button>
-          </form>
+          <div className="flex items-center gap-2">
+            <Link href="/historial" className="text-neutral-400 hover:text-white p-2 rounded-lg hover:bg-neutral-800 transition-colors md:hidden" title="Mi historial">
+              <History size={18} />
+            </Link>
+            <form action={logoutAction}>
+              <button type="submit" className="text-neutral-400 hover:text-white p-2 rounded-lg hover:bg-neutral-800 transition-colors" title="Cerrar sesión">
+                <LogOut size={18} />
+              </button>
+            </form>
+          </div>
         </header>
 
         <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6 scroll-smooth z-0">

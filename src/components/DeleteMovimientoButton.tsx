@@ -27,7 +27,7 @@ export default function DeleteMovimientoButton({ id }: { id: string }) {
       onClick={handleDelete} 
       disabled={isDeleting}
       className="text-xs text-red-500 hover:text-red-400 bg-red-950/30 px-2 py-1 rounded transition-colors disabled:opacity-50"
-      title="Eliminar registro (Admin)"
+      title="Eliminar registro"
     >
       {isDeleting ? '...' : 'Borrar'}
     </button>

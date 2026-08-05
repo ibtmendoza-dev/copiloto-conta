@@ -237,8 +237,23 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
 export async function deleteMovimiento(id: string) {
   try {
     const session = await getSession();
-    if (!session || session.usuario.rol !== 'ADMIN') {
+    if (!session) {
       throw new Error('No autorizado');
+    }
+
+    const movimiento = await prisma.movimiento.findUnique({ where: { id } });
+    if (!movimiento) throw new Error('Movimiento no encontrado');
+
+    if (session.usuario.rol !== 'ADMIN') {
+      if (movimiento.usuarioId !== session.usuario.id) {
+        throw new Error('No estás autorizado para borrar registros de otros usuarios.');
+      }
+      
+      // Límite de 24 horas para operadores
+      const horasTranscurridas = (Date.now() - movimiento.createdAt.getTime()) / (1000 * 60 * 60);
+      if (horasTranscurridas > 24) {
+        throw new Error('Solo puedes borrar registros que hayas creado en las últimas 24 horas.');
+      }
     }
     
     // Al borrar el movimiento en cascada se deberían borrar conceptos y comprobantes 
