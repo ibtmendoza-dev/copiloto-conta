@@ -110,6 +110,18 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
       }),
     });
 
+    // === VALIDACIÓN ESTRICTA DE PRECIO ===
+    // Evitamos guardar registros en $0 que contaminen la contabilidad
+    for (const mov of object.movimientos) {
+      if (!mov.importe || mov.importe <= 0) {
+        const itemNames = mov.articulos?.map((a: any) => a.descripcion).join(', ') || 'este movimiento';
+        return { 
+          success: false, 
+          error: `No detecté el precio de "${itemNames}". Por favor, intenta de nuevo especificando cuánto costó.` 
+        };
+      }
+    }
+
     const savedMovimientos = [];
 
     let index = 0;
