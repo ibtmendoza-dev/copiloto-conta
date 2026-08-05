@@ -42,3 +42,9 @@ next-env.d.ts
 
 /src/generated/prisma
 *.db
+# Service worker generado por Serwist en cada compilacion. Estaba versionado
+# con un marcador de 2 lineas y la compilacion lo sustituye por 43 KB, asi que
+# aparecia modificado cada vez que alguien compilaba. Vercel lo genera solo al
+# desplegar; no hace falta en el repositorio.
+/public/sw.js
+/public/sw.js.map
