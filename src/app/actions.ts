@@ -233,3 +233,25 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
     return { success: false, error: 'No pude procesar la solicitud. ' + error.message }
   }
 }
+
+export async function deleteMovimiento(id: string) {
+  try {
+    const session = await getSession();
+    if (!session || session.usuario.rol !== 'ADMIN') {
+      throw new Error('No autorizado');
+    }
+    
+    // Al borrar el movimiento en cascada se deberían borrar conceptos y comprobantes 
+    // (si la DB lo permite) o los borramos manualmente por si acaso.
+    await prisma.concepto.deleteMany({ where: { movimientoId: id } });
+    await prisma.comprobante.deleteMany({ where: { movimientoId: id } });
+    await prisma.movimiento.delete({ where: { id } });
+
+    // TODO: Eliminar de Firebase si es inventario, pero por ahora en MVP basta borrarlo localmente.
+    
+    return { success: true };
+  } catch (error: any) {
+    console.error('Error al borrar movimiento:', error);
+    return { success: false, error: error.message };
+  }
+}

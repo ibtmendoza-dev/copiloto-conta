@@ -48,3 +48,6 @@ next-env.d.ts
 # desplegar; no hace falta en el repositorio.
 /public/sw.js
 /public/sw.js.map
+
+.vercel
+.env*

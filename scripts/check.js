@@ -1,12 +1,15 @@
-const { PrismaClient } = require('@prisma/client'); 
-const prisma = new PrismaClient(); 
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
 
-prisma.movimiento.findMany({ 
-  orderBy: { createdAt: 'desc' }, 
-  take: 5 
-})
-.then(data => {
-  console.log(JSON.stringify(data, null, 2));
-})
-.catch(console.error)
-.finally(() => prisma.$disconnect());
+async function main() {
+  const movimientos = await prisma.movimiento.findMany({
+    orderBy: { createdAt: 'desc' },
+    take: 3,
+    include: { usuario: true, conceptos: true }
+  });
+  console.log(JSON.stringify(movimientos, null, 2));
+}
+
+main()
+  .catch(e => console.error(e))
+  .finally(() => prisma.$disconnect());

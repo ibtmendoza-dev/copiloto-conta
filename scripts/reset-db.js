@@ -41,14 +41,12 @@ async function main() {
   }
 
   if (!process.env.BLOB_READ_WRITE_TOKEN) {
-    console.error(
+    console.warn(
       'Falta BLOB_READ_WRITE_TOKEN.\n' +
       'Sin ese token no se pueden borrar las imagenes, y borrar solo la base\n' +
-      'las dejaria huerfanas en el almacen. Trae las variables con:\n' +
-      '  vercel env pull'
+      'las dejaria huerfanas en el almacen. Continuando solo con la base de datos...'
     );
-    process.exitCode = 1;
-    return;
+    // Continuamos sin token
   }
 
   const [movimientos, conceptos, comprobantes] = await Promise.all([
@@ -79,9 +77,11 @@ async function main() {
   // 1. Las imagenes primero: despues de borrar las filas ya no se sabria cuales.
   //    Un fallo aqui detiene el script CON LA BASE INTACTA, que es el orden
   //    correcto de fallar: se puede reintentar sin haber perdido nada.
-  if (enElAlmacen.length > 0) {
+  if (enElAlmacen.length > 0 && process.env.BLOB_READ_WRITE_TOKEN) {
     await del(enElAlmacen);
     console.log(`\nBorradas ${enElAlmacen.length} imagen(es) del almacen.`);
+  } else if (enElAlmacen.length > 0) {
+    console.log(`\nSaltando borrado de ${enElAlmacen.length} imagen(es) por falta de token.`);
   }
 
   // 2. Las filas. El orden importa: conceptos y comprobantes cuelgan del

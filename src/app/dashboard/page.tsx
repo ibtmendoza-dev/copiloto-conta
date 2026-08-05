@@ -2,6 +2,7 @@ import { prisma } from '@/lib/prisma'
 import Link from 'next/link'
 import { getSession } from '@/lib/auth'
 import { redirect } from 'next/navigation'
+import DeleteMovimientoButton from '@/components/DeleteMovimientoButton'
 
 export default async function DashboardPage(props: { searchParams: Promise<{ contexto?: string }> }) {
   const session = await getSession();
@@ -114,9 +115,12 @@ export default async function DashboardPage(props: { searchParams: Promise<{ con
                   {mov.fechaOcurrencia.toLocaleDateString()} • {mov.tasaIva === '0%' ? 'Tasa 0%' : 'Con IVA'}
                 </span>
               </div>
-              <span className="font-bold text-sm">
-                {mov.tipo === 'GASTO' ? '-' : '+'}${Number(mov.importe).toLocaleString('es-MX', { minimumFractionDigits: 2 })}
-              </span>
+              <div className="flex items-center space-x-3">
+                <span className="font-bold text-sm">
+                  {mov.tipo === 'GASTO' ? '-' : '+'}${Number(mov.importe).toLocaleString('es-MX', { minimumFractionDigits: 2 })}
+                </span>
+                <DeleteMovimientoButton id={mov.id} />
+              </div>
             </div>
           ))}
           {movimientos.length === 0 && (
