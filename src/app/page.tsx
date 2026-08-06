@@ -282,6 +282,11 @@ export default function CopilotChat() {
         }
         setMessages(prev => [...prev, responseMessage])
       } else {
+        if (result.error?.includes('No autorizado')) {
+          await logoutAction();
+          return;
+        }
+
         const errorMessage = {
           id: Date.now() + 1,
           role: "assistant",
