@@ -22,6 +22,7 @@
 
 const { PrismaClient } = require('@prisma/client');
 const bcrypt = require('bcryptjs');
+const { confirmarBaseDeDatos } = require('./guardia-base');
 const prisma = new PrismaClient();
 
 const ROLES = ['ADMIN', 'OPERADOR'];
@@ -65,6 +66,10 @@ function leerUsuarios() {
 
 async function main() {
   const usuarios = leerUsuarios();
+
+  // No borra cuentas, pero sobrescribe contrasenas y roles de las que ya
+  // existen: aplicado a la base equivocada deja fuera a los operadores reales.
+  confirmarBaseDeDatos('dar de alta o cambiar contrasenas y roles de cuentas');
 
   for (const u of usuarios) {
     const password = bcrypt.hashSync(u.password, 10);

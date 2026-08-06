@@ -27,6 +27,7 @@
 
 const { PrismaClient } = require('@prisma/client');
 const { del } = require('@vercel/blob');
+const { confirmarBaseDeDatos } = require('./guardia-base');
 const prisma = new PrismaClient();
 
 async function main() {
@@ -39,6 +40,11 @@ async function main() {
     process.exitCode = 1;
     return;
   }
+
+  // Dos preguntas distintas, en este orden: primero "seguro que quieres
+  // borrar" (arriba), y ahora "seguro que quieres borrar AQUI". Antes de
+  // consultar nada, para que el destino se vea antes de tocar la base.
+  confirmarBaseDeDatos('borrar todos los movimientos, conceptos y comprobantes');
 
   if (!process.env.BLOB_READ_WRITE_TOKEN) {
     console.warn(
