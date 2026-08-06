@@ -55,6 +55,7 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
 
     const { object } = await generateObject({
       model: google('gemini-3.6-flash'), // Versión 2026
+      maxRetries: 0, // Desactivar reintentos automáticos (evita quemar cuota en errores 429)
       system: `Eres un asistente de extracción financiera experto. 
       Tu objetivo es analizar un mensaje desestructurado y extraer los datos duros de un "Movimiento Económico".
       Si recibes una imagen de un ticket o factura, actúa como un OCR inteligente. Extrae el importe total, la fecha, el proveedor y fusiónalo con las instrucciones del usuario.
