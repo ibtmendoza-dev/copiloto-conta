@@ -7,8 +7,10 @@ import DeleteMovimientoButton from '@/components/DeleteMovimientoButton'
 
 export default async function HistorialPage() {
   const session = await getSession();
+  // A '/login', no a '/': sin sesion valida el inicio es el limbo -- carga el
+  // chat y solo falla al enviar. Ver la nota en middleware.ts.
   if (!session) {
-    redirect('/');
+    redirect('/login');
   }
 
   // Límite de las últimas 24 horas

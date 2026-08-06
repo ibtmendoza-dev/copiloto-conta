@@ -6,7 +6,13 @@ import DeleteMovimientoButton from '@/components/DeleteMovimientoButton'
 
 export default async function DashboardPage(props: { searchParams: Promise<{ contexto?: string }> }) {
   const session = await getSession();
-  if (!session || session.usuario.rol !== 'ADMIN') {
+  // Dos casos distintos que antes acababan los dos en '/'. Sin sesion valida,
+  // mandar al inicio dejaba al operador en el limbo: el chat cargaba y solo
+  // fallaba al enviar un mensaje. La salida correcta es identificarse de nuevo.
+  if (!session) {
+    redirect('/login');
+  }
+  if (session.usuario.rol !== 'ADMIN') {
     redirect('/');
   }
 
