@@ -6,7 +6,7 @@ import Link from "next/link"
 import { createMovimiento } from "./actions"
 import { logoutAction } from "./login/actions"
 import { savePendingMovement, getPendingMovements, deletePendingMovement } from "@/lib/offlineQueue"
-import { iniciarDictado, reiniciarSesion, aplicarResultado, type EstadoDictado } from "@/lib/dictado"
+import { iniciarDictado, aplicarResultado, describirResultado, type EstadoDictado } from "@/lib/dictado"
 
 export default function CopilotChat() {
   const [messages, setMessages] = useState([
@@ -21,6 +21,11 @@ export default function CopilotChat() {
   const [attachedImage, setAttachedImage] = useState<string | null>(null)
   const [isTyping, setIsTyping] = useState(false)
   const [isListening, setIsListening] = useState(false)
+  // Registro temporal de lo que el reconocedor de voz entrega de verdad en el
+  // telefono. Esta aqui porque el fallo del dictado se lleva diagnosticando a
+  // ciegas: deducir que manda Android no ha funcionado, hay que verlo.
+  const [registroDictado, setRegistroDictado] = useState<string[]>([])
+  const [verRegistroDictado, setVerRegistroDictado] = useState(false)
   const [isOffline, setIsOffline] = useState(false)
   const [isSyncing, setIsSyncing] = useState(false)
 
@@ -34,7 +39,10 @@ export default function CopilotChat() {
   // Al enviar hay que tirar lo que llegue tarde del reconocedor; al parar el
   // microfono a mano, no, porque la ultima frase llega despues de `stop()`.
   const descartarDictadoRef = useRef<boolean>(false)
-  const reinicioDictadoRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const anotarDictado = (linea: string) => {
+    setRegistroDictado((previo) => [...previo.slice(-59), linea])
+  }
 
   const adjustTextareaHeight = () => {
     if (textareaRef.current) {
@@ -139,6 +147,7 @@ export default function CopilotChat() {
 
     // La acumulacion vive en `@/lib/dictado`, con pruebas. Aqui solo se conecta.
     recognition.onresult = (event: any) => {
+      anotarDictado(describirResultado(event, descartarDictadoRef.current))
       if (descartarDictadoRef.current) return
       const { estado, texto } = aplicarResultado(dictadoRef.current, event)
       dictadoRef.current = estado
@@ -147,47 +156,29 @@ export default function CopilotChat() {
 
     recognition.onerror = (event: any) => {
       console.error("Speech recognition error", event.error)
+      anotarDictado(`error: ${event.error}`)
       if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
         alert("Acceso al micrófono denegado. Por favor, dale permisos al navegador.")
-        shouldListenRef.current = false
-        setIsListening(false)
-        return
       }
-      // 'no-speech' y 'aborted' son normales en una pausa larga: el navegador
-      // cierra la sesion y `onend` la vuelve a abrir. Si aqui se apagara el
-      // bucle, el microfono seguiria grabando con el boton mostrando apagado.
-      if (event.error !== 'no-speech' && event.error !== 'aborted') {
-        shouldListenRef.current = false
-        setIsListening(false)
-      }
+      shouldListenRef.current = false
+      setIsListening(false)
     }
 
+    // Una frase por toque. El bucle que reabria la sesion al terminar quedaba
+    // expuesto a que Android volviera a entregar audio ya entregado, y cada
+    // reentrega se sumaba como frase nueva. Es el unico camino a la repeticion
+    // que queda identificado, asi que se quita hasta que el registro de arriba
+    // diga que hace el telefono de verdad. Se paga con un toque por frase.
     recognition.onend = () => {
-      if (!shouldListenRef.current) {
-        setIsListening(false)
-        return
-      }
-      // La sesion nueva vuelve a numerar sus resultados desde 0.
-      dictadoRef.current = reiniciarSesion(dictadoRef.current)
-      // Nunca `start()` de forma sincrona dentro de `onend`: Chrome lanza
-      // InvalidStateError si llega antes de que la sesion anterior cierre.
-      reinicioDictadoRef.current = setTimeout(() => {
-        if (!shouldListenRef.current) return
-        try {
-          recognition.start()
-        } catch (e) {
-          console.error("Error al reiniciar reconocimiento:", e)
-          shouldListenRef.current = false
-          setIsListening(false)
-        }
-      }, 250)
+      anotarDictado('fin de sesion')
+      shouldListenRef.current = false
+      setIsListening(false)
     }
 
     recognitionRef.current = recognition
 
     return () => {
       shouldListenRef.current = false
-      if (reinicioDictadoRef.current) clearTimeout(reinicioDictadoRef.current)
       recognition.onresult = null
       recognition.onerror = null
       recognition.onend = null
@@ -204,7 +195,6 @@ export default function CopilotChat() {
 
     if (isListening) {
       shouldListenRef.current = false
-      if (reinicioDictadoRef.current) clearTimeout(reinicioDictadoRef.current)
       // Sin descartar: la ultima frase llega despues de `stop()` y hay que
       // dejarla entrar, o se pierde lo ultimo que dijo el usuario.
       recognitionRef.current.stop()
@@ -214,6 +204,7 @@ export default function CopilotChat() {
       dictadoRef.current = iniciarDictado(newMessage.content)
       descartarDictadoRef.current = false
       shouldListenRef.current = true
+      anotarDictado(`--- inicio, base: "${dictadoRef.current.base}"`)
       try {
         recognitionRef.current.start()
         setIsListening(true)
@@ -289,7 +280,6 @@ export default function CopilotChat() {
     if (recognitionRef.current && (isListening || shouldListenRef.current)) {
       shouldListenRef.current = false
       descartarDictadoRef.current = true
-      if (reinicioDictadoRef.current) clearTimeout(reinicioDictadoRef.current)
       recognitionRef.current.stop()
       setIsListening(false)
     }
@@ -544,8 +534,46 @@ export default function CopilotChat() {
                 <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
               </button>
             </form>
+            {registroDictado.length > 0 && (
+              <div className="mt-2 text-[10px] text-neutral-500">
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setVerRegistroDictado(!verRegistroDictado)}
+                    className="underline"
+                  >
+                    {verRegistroDictado ? 'Ocultar' : 'Ver'} registro del dictado ({registroDictado.length})
+                  </button>
+                  {verRegistroDictado && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => navigator.clipboard?.writeText(registroDictado.join('\n'))}
+                        className="underline"
+                      >
+                        Copiar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRegistroDictado([])}
+                        className="underline"
+                      >
+                        Limpiar
+                      </button>
+                    </>
+                  )}
+                </div>
+                {verRegistroDictado && (
+                  <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all bg-neutral-900 p-2 rounded-lg border border-neutral-800">
+                    {registroDictado.join('\n')}
+                  </pre>
+                )}
+              </div>
+            )}
             <div className="text-center mt-2">
-              <span className="text-[10px] text-neutral-600">El Copiloto abstrae la complejidad. Céntrate en la realidad. (v0.2 PWA)</span>
+              <span className="text-[10px] text-neutral-600">
+                El Copiloto abstrae la complejidad. Céntrate en la realidad. (v0.2 PWA · dictado-3 · {(process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA ?? 'local').slice(0, 7)})
+              </span>
             </div>
           </div>
         </div>

@@ -97,6 +97,29 @@ export function aplicarResultado(
   return { estado: nuevo, texto: unir(nuevo.base, nuevo.finalizado, provisional) }
 }
 
+/**
+ * Resume un evento del reconocedor en una linea legible, para el registro que
+ * se muestra en la aplicacion. Es temporal: existe para ver que entrega el
+ * telefono de verdad en lugar de deducirlo.
+ */
+export function describirResultado(evento: EventoReconocimiento, descartado = false): string {
+  const resultados = evento.results
+  const total = resultados ? resultados.length : 0
+  const piezas: string[] = []
+
+  for (let i = 0; i < total; i++) {
+    const resultado = resultados![i]
+    if (!resultado || !resultado[0]) {
+      piezas.push(`${i}:vacio`)
+      continue
+    }
+    piezas.push(`${i}${resultado.isFinal ? 'F' : 'p'}:"${resultado[0].transcript}"`)
+  }
+
+  const cabecera = `desde ${evento.resultIndex ?? 0} de ${total}`
+  return `${descartado ? '(descartado) ' : ''}${cabecera} ${piezas.join(' ')}`.trim()
+}
+
 function unir(...partes: string[]): string {
   return partes
     .map((parte) => parte.trim())

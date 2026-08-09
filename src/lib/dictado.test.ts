@@ -12,6 +12,7 @@ import {
   reiniciarSesion,
   aplicarResultado,
   textoDictado,
+  describirResultado,
   type EstadoDictado,
   type EventoReconocimiento
 } from './dictado';
@@ -114,6 +115,26 @@ describe('aplicarResultado', () => {
     ]);
 
     expect(texto).toBe('verduras');
+  });
+});
+
+describe('describirResultado', () => {
+  it('resume el evento sin perder el indice, el estado ni el texto', () => {
+    const linea = describirResultado(
+      evento(1, ['compramos', true], ['cinco kilos', false])
+    );
+
+    expect(linea).toBe('desde 1 de 2 0F:"compramos" 1p:"cinco kilos"');
+  });
+
+  it('marca los eventos que se descartan por venir despues del envio', () => {
+    const linea = describirResultado(evento(0, ['compramos', true]), true);
+
+    expect(linea).toBe('(descartado) desde 0 de 1 0F:"compramos"');
+  });
+
+  it('aguanta un evento sin resultados', () => {
+    expect(describirResultado({ resultIndex: 0 })).toBe('desde 0 de 0');
   });
 });
 
