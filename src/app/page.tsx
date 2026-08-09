@@ -28,6 +28,7 @@ export default function CopilotChat() {
   const cameraInputRef = useRef<HTMLInputElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const baseTextRef = useRef<string>("")
 
   const adjustTextareaHeight = () => {
     if (textareaRef.current) {
@@ -126,11 +127,12 @@ export default function CopilotChat() {
         recognitionRef.current.lang = 'es-MX'
 
         recognitionRef.current.onresult = (event: any) => {
-          let currentTranscript = ''
+          let sessionTranscript = ''
           for (let i = 0; i < event.results.length; i++) {
-            currentTranscript += event.results[i][0].transcript
+            sessionTranscript += event.results[i][0].transcript
           }
-          setNewMessage({ content: currentTranscript })
+          const separator = baseTextRef.current && !baseTextRef.current.endsWith(' ') ? ' ' : ''
+          setNewMessage({ content: baseTextRef.current + separator + sessionTranscript })
         }
 
         recognitionRef.current.onerror = (event: any) => {
@@ -160,7 +162,8 @@ export default function CopilotChat() {
       recognitionRef.current.stop()
       setIsListening(false)
     } else {
-      setNewMessage({ content: "" })
+      // Guardar lo que el usuario ya habia escrito a mano antes de encender el microfono
+      baseTextRef.current = newMessage.content
       try {
         recognitionRef.current.start()
         setIsListening(true)
@@ -232,6 +235,12 @@ export default function CopilotChat() {
     setNewMessage({ content: "" })
     setAttachedImage(null)
     setIsTyping(true)
+    
+    // Apagar el microfono si seguia encendido al enviar, para limpiar la sesion de dictado
+    if (isListening && recognitionRef.current) {
+      recognitionRef.current.stop()
+      setIsListening(false)
+    }
     
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
