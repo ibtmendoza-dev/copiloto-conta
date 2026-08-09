@@ -46,6 +46,67 @@ programado justo para impedir eso.
 **Comprueba que el camino completo existe.** Si mandas al usuario a un botón,
 verifica que el botón esté ahí.
 
+## Cuando el fallo parece del navegador o de una librería
+
+El 9 de agosto de 2026, el dictado por voz llenaba la casilla de texto con la
+misma palabra repetida. Se explicó como "un fallo severo y muy conocido nativo
+de Google Chrome en Android". No lo era. `event.results` de la Web Speech API es
+acumulativo por especificación, y `src/app/page.tsx` lo recorría desde el índice
+0 y volvía a pegar la lista entera en cada evento, varias veces por segundo. El
+fallo era de este repositorio, en una sola línea.
+
+**La primera sospecha es tu propio código, siempre.** Las plataformas grandes
+tienen fallos, pero son raros comparados con leer mal una interfaz. Si concluyes
+que el navegador está roto, es que aún no has terminado de leer.
+
+**Culpar a una plataforma exige una cita.** La especificación, la documentación
+o el fallo abierto en su rastreador, con enlace. Sin eso, "es un bug conocido de
+Chrome" es una causa inventada con mejor ropa: suena a diagnóstico, cierra la
+investigación igual, y encima hace que nadie vuelva a mirar el código.
+
+**Lee la especificación de la interfaz antes de declararla rota.** Lo que parece
+un fallo del navegador suele ser un campo que no estabas leyendo — aquí,
+`event.resultIndex`.
+
+## Que el síntoma desaparezca no confirma la causa
+
+En ese mismo episodio se apagó `interimResults` y la repetición se fue. Se tomó
+como confirmación de la teoría del fallo de Android. No lo era: se había quitado
+la entrada que el bucle mal escrito estaba re-concatenando. La causa seguía ahí,
+intacta.
+
+**Un cambio que hace desaparecer el síntoma puede estar tapándolo.** Antes de
+darlo por bueno, explica por qué funciona en términos del mecanismo que
+identificaste. Si no puedes, no lo has arreglado: lo has escondido.
+
+**Si el segundo intento tampoco funciona, no construyas un tercero encima.**
+Vuelve al principio y lee. El tercer intento de aquel día fue un bucle manual de
+reinicios del micrófono para rodear un fallo del navegador que no existía:
+andamio sosteniendo un diagnóstico falso, con sus propios fallos nuevos dentro.
+
+## Cómo se arregla un fallo que no puedes reproducir tú
+
+El usuario tiene el teléfono; tú no. Eso no te autoriza a usar producción como
+banco de pruebas. Aquel día hubo tres despliegues a Vercel en once minutos, cada
+uno anunciado con seguridad total, y el único que probaba algo era él.
+
+**Saca la lógica del componente y pruébala.** Casi todo fallo de este tipo vive
+en una función que se puede volver pura. La acumulación del dictado se movió a
+`src/lib/dictado.ts`; la secuencia exacta de eventos que producía la repetición
+está en `src/lib/dictado.test.ts` y corre sin micrófono, sin navegador y sin
+teléfono. Sigue ese patrón: `src/lib/libro.test.ts` es el precedente.
+
+**Antes de subir nada: `npm test` y `npm run build`.** Los dos, y di el
+resultado. Si el fallo tenía prueba, la prueba se escribe antes del arreglo y se
+comprueba que falla sin él.
+
+**Lo que no pudiste probar, dilo con esas palabras.** "No pude comprobar el
+dictado en un Android real; lo que verifiqué es la acumulación con pruebas, el
+tipado y la compilación" es un informe honesto. "Ya quedó, pruébalo" no lo es.
+
+**Un despliegue no es una prueba.** Que Vercel compile no dice nada sobre si el
+fallo se fue.
+
 ## Al informar de un arreglo
 
 **Nombra los archivos que cambiaste, por ruta.** No describas el arreglo por su
