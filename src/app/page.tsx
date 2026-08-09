@@ -29,6 +29,7 @@ export default function CopilotChat() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const baseTextRef = useRef<string>("")
+  const shouldListenRef = useRef<boolean>(false)
 
   const adjustTextareaHeight = () => {
     if (textareaRef.current) {
@@ -122,18 +123,25 @@ export default function CopilotChat() {
       const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
       if (SpeechRecognition) {
         recognitionRef.current = new SpeechRecognition()
-        recognitionRef.current.continuous = true
-        // Desactivamos interimResults para evitar un bug severo en Android Chrome donde 
-        // duplica las palabras repetidamente en el array event.results
-        recognitionRef.current.interimResults = false
+        // Para tener interimResults sin el bug de duplicacion de Android,
+        // apagamos el 'continuous' nativo y lo simulamos reiniciando manualmente en onend.
+        recognitionRef.current.continuous = false
+        recognitionRef.current.interimResults = true
+        recognitionRef.current.lang = 'es-MX'
 
         recognitionRef.current.onresult = (event: any) => {
-          let sessionTranscript = ''
-          for (let i = 0; i < event.results.length; i++) {
-            sessionTranscript += event.results[i][0].transcript + ' '
-          }
+          if (!event.results || !event.results[0]) return;
+          
+          const currentTranscript = event.results[0][0].transcript
           const separator = baseTextRef.current && !baseTextRef.current.endsWith(' ') ? ' ' : ''
-          setNewMessage({ content: baseTextRef.current + separator + sessionTranscript.trim() })
+          const combinedText = baseTextRef.current + separator + currentTranscript.trim()
+          
+          setNewMessage({ content: combinedText })
+          
+          // Si el navegador marca la frase como terminada (pausa), la anclamos a la base
+          if (event.results[0].isFinal) {
+             baseTextRef.current = combinedText
+          }
         }
 
         recognitionRef.current.onerror = (event: any) => {
@@ -145,7 +153,15 @@ export default function CopilotChat() {
         }
 
         recognitionRef.current.onend = () => {
-          setIsListening(false)
+          if (shouldListenRef.current) {
+            try {
+              recognitionRef.current.start()
+            } catch (e) {
+              setIsListening(false)
+            }
+          } else {
+            setIsListening(false)
+          }
         }
       } else {
         console.warn("SpeechRecognition API no soportada en este navegador.")
@@ -160,11 +176,13 @@ export default function CopilotChat() {
     }
 
     if (isListening) {
+      shouldListenRef.current = false
       recognitionRef.current.stop()
       setIsListening(false)
     } else {
       // Guardar lo que el usuario ya habia escrito a mano antes de encender el microfono
       baseTextRef.current = newMessage.content
+      shouldListenRef.current = true
       try {
         recognitionRef.current.start()
         setIsListening(true)
@@ -239,6 +257,7 @@ export default function CopilotChat() {
     
     // Apagar el microfono si seguia encendido al enviar, para limpiar la sesion de dictado
     if (isListening && recognitionRef.current) {
+      shouldListenRef.current = false
       recognitionRef.current.stop()
       setIsListening(false)
     }
