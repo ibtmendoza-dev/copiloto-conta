@@ -123,16 +123,17 @@ export default function CopilotChat() {
       if (SpeechRecognition) {
         recognitionRef.current = new SpeechRecognition()
         recognitionRef.current.continuous = true
-        recognitionRef.current.interimResults = true
-        recognitionRef.current.lang = 'es-MX'
+        // Desactivamos interimResults para evitar un bug severo en Android Chrome donde 
+        // duplica las palabras repetidamente en el array event.results
+        recognitionRef.current.interimResults = false
 
         recognitionRef.current.onresult = (event: any) => {
           let sessionTranscript = ''
           for (let i = 0; i < event.results.length; i++) {
-            sessionTranscript += event.results[i][0].transcript
+            sessionTranscript += event.results[i][0].transcript + ' '
           }
           const separator = baseTextRef.current && !baseTextRef.current.endsWith(' ') ? ' ' : ''
-          setNewMessage({ content: baseTextRef.current + separator + sessionTranscript })
+          setNewMessage({ content: baseTextRef.current + separator + sessionTranscript.trim() })
         }
 
         recognitionRef.current.onerror = (event: any) => {
