@@ -6,6 +6,7 @@ import Link from "next/link"
 import { createMovimiento } from "./actions"
 import { logoutAction } from "./login/actions"
 import { savePendingMovement, getPendingMovements, deletePendingMovement } from "@/lib/offlineQueue"
+import { iniciarDictado, reiniciarSesion, aplicarResultado, type EstadoDictado } from "@/lib/dictado"
 
 export default function CopilotChat() {
   const [messages, setMessages] = useState([
@@ -28,8 +29,12 @@ export default function CopilotChat() {
   const cameraInputRef = useRef<HTMLInputElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const baseTextRef = useRef<string>("")
+  const dictadoRef = useRef<EstadoDictado>(iniciarDictado(""))
   const shouldListenRef = useRef<boolean>(false)
+  // Al enviar hay que tirar lo que llegue tarde del reconocedor; al parar el
+  // microfono a mano, no, porque la ultima frase llega despues de `stop()`.
+  const descartarDictadoRef = useRef<boolean>(false)
+  const reinicioDictadoRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const adjustTextareaHeight = () => {
     if (textareaRef.current) {
@@ -119,53 +124,75 @@ export default function CopilotChat() {
 
   // Initialize speech recognition
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-      if (SpeechRecognition) {
-        recognitionRef.current = new SpeechRecognition()
-        // Para tener interimResults sin el bug de duplicacion de Android,
-        // apagamos el 'continuous' nativo y lo simulamos reiniciando manualmente en onend.
-        recognitionRef.current.continuous = false
-        recognitionRef.current.interimResults = true
-        recognitionRef.current.lang = 'es-MX'
+    if (typeof window === 'undefined') return
 
-        recognitionRef.current.onresult = (event: any) => {
-          if (!event.results || !event.results[0]) return;
-          
-          const currentTranscript = event.results[0][0].transcript
-          const separator = baseTextRef.current && !baseTextRef.current.endsWith(' ') ? ' ' : ''
-          const combinedText = baseTextRef.current + separator + currentTranscript.trim()
-          
-          setNewMessage({ content: combinedText })
-          
-          // Si el navegador marca la frase como terminada (pausa), la anclamos a la base
-          if (event.results[0].isFinal) {
-             baseTextRef.current = combinedText
-          }
-        }
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+    if (!SpeechRecognition) {
+      console.warn("SpeechRecognition API no soportada en este navegador.")
+      return
+    }
 
-        recognitionRef.current.onerror = (event: any) => {
-          console.error("Speech recognition error", event.error)
-          if (event.error === 'not-allowed') {
-            alert("Acceso al micrófono denegado. Por favor, dale permisos al navegador.")
-          }
+    const recognition = new SpeechRecognition()
+    recognition.continuous = true
+    recognition.interimResults = true
+    recognition.lang = 'es-MX'
+
+    // La acumulacion vive en `@/lib/dictado`, con pruebas. Aqui solo se conecta.
+    recognition.onresult = (event: any) => {
+      if (descartarDictadoRef.current) return
+      const { estado, texto } = aplicarResultado(dictadoRef.current, event)
+      dictadoRef.current = estado
+      setNewMessage({ content: texto })
+    }
+
+    recognition.onerror = (event: any) => {
+      console.error("Speech recognition error", event.error)
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        alert("Acceso al micrófono denegado. Por favor, dale permisos al navegador.")
+        shouldListenRef.current = false
+        setIsListening(false)
+        return
+      }
+      // 'no-speech' y 'aborted' son normales en una pausa larga: el navegador
+      // cierra la sesion y `onend` la vuelve a abrir. Si aqui se apagara el
+      // bucle, el microfono seguiria grabando con el boton mostrando apagado.
+      if (event.error !== 'no-speech' && event.error !== 'aborted') {
+        shouldListenRef.current = false
+        setIsListening(false)
+      }
+    }
+
+    recognition.onend = () => {
+      if (!shouldListenRef.current) {
+        setIsListening(false)
+        return
+      }
+      // La sesion nueva vuelve a numerar sus resultados desde 0.
+      dictadoRef.current = reiniciarSesion(dictadoRef.current)
+      // Nunca `start()` de forma sincrona dentro de `onend`: Chrome lanza
+      // InvalidStateError si llega antes de que la sesion anterior cierre.
+      reinicioDictadoRef.current = setTimeout(() => {
+        if (!shouldListenRef.current) return
+        try {
+          recognition.start()
+        } catch (e) {
+          console.error("Error al reiniciar reconocimiento:", e)
+          shouldListenRef.current = false
           setIsListening(false)
         }
+      }, 250)
+    }
 
-        recognitionRef.current.onend = () => {
-          if (shouldListenRef.current) {
-            try {
-              recognitionRef.current.start()
-            } catch (e) {
-              setIsListening(false)
-            }
-          } else {
-            setIsListening(false)
-          }
-        }
-      } else {
-        console.warn("SpeechRecognition API no soportada en este navegador.")
-      }
+    recognitionRef.current = recognition
+
+    return () => {
+      shouldListenRef.current = false
+      if (reinicioDictadoRef.current) clearTimeout(reinicioDictadoRef.current)
+      recognition.onresult = null
+      recognition.onerror = null
+      recognition.onend = null
+      try { recognition.abort() } catch { /* la sesion ya estaba cerrada */ }
+      recognitionRef.current = null
     }
   }, [])
 
@@ -177,17 +204,22 @@ export default function CopilotChat() {
 
     if (isListening) {
       shouldListenRef.current = false
+      if (reinicioDictadoRef.current) clearTimeout(reinicioDictadoRef.current)
+      // Sin descartar: la ultima frase llega despues de `stop()` y hay que
+      // dejarla entrar, o se pierde lo ultimo que dijo el usuario.
       recognitionRef.current.stop()
       setIsListening(false)
     } else {
-      // Guardar lo que el usuario ya habia escrito a mano antes de encender el microfono
-      baseTextRef.current = newMessage.content
+      // Anclar lo que el usuario ya habia escrito a mano antes de encender el microfono
+      dictadoRef.current = iniciarDictado(newMessage.content)
+      descartarDictadoRef.current = false
       shouldListenRef.current = true
       try {
         recognitionRef.current.start()
         setIsListening(true)
       } catch (e) {
         console.error("Error al iniciar reconocimiento:", e)
+        shouldListenRef.current = false
       }
     }
   }
@@ -251,17 +283,22 @@ export default function CopilotChat() {
     const imageToSend = attachedImage
     const clientMessageId = crypto.randomUUID()
     
-    setNewMessage({ content: "" })
-    setAttachedImage(null)
-    setIsTyping(true)
-    
-    // Apagar el microfono si seguia encendido al enviar, para limpiar la sesion de dictado
-    if (isListening && recognitionRef.current) {
+    // Apagar el microfono antes de vaciar la casilla. `stop()` es asincrono y
+    // el reconocedor todavia entrega la frase en curso: sin descartarla, ese
+    // resultado tardio reescribiria en la casilla el mensaje recien enviado.
+    if (recognitionRef.current && (isListening || shouldListenRef.current)) {
       shouldListenRef.current = false
+      descartarDictadoRef.current = true
+      if (reinicioDictadoRef.current) clearTimeout(reinicioDictadoRef.current)
       recognitionRef.current.stop()
       setIsListening(false)
     }
-    
+    dictadoRef.current = iniciarDictado("")
+
+    setNewMessage({ content: "" })
+    setAttachedImage(null)
+    setIsTyping(true)
+
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
