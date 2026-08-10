@@ -37,11 +37,13 @@ export interface EstadoDictado {
    * finales. Sirve para ignorar los que Android reemite.
    */
   readonly resultadosCerrados: number
+  /** El ultimo texto final que se agrego. Se usa para detectar el bug de Android. */
+  readonly ultimoFinal: string
 }
 
 /** Empieza un dictado anclado al texto que ya hubiera en la casilla. */
 export function iniciarDictado(base: string): EstadoDictado {
-  return { base: base.trim(), finalizado: "", resultadosCerrados: 0 }
+  return { base: base.trim(), finalizado: "", resultadosCerrados: 0, ultimoFinal: "" }
 }
 
 /**
@@ -49,7 +51,7 @@ export function iniciarDictado(base: string): EstadoDictado {
  * nueva vuelve a numerar sus resultados desde 0, pero lo ya dictado se conserva.
  */
 export function reiniciarSesion(estado: EstadoDictado): EstadoDictado {
-  return { ...estado, resultadosCerrados: 0 }
+  return { ...estado, resultadosCerrados: 0, ultimoFinal: "" }
 }
 
 /** El texto que debe verse en la casilla si el dictado terminara ahora. */
@@ -74,18 +76,31 @@ export function aplicarResultado(
   const desde = Math.min(Math.max(evento.resultIndex ?? 0, 0), resultados.length)
   let finalizado = estado.finalizado
   let cerrados = estado.resultadosCerrados
+  let ultimoFinal = estado.ultimoFinal
   let provisional = ""
 
   for (let i = desde; i < resultados.length; i++) {
     const resultado = resultados[i]
     if (!resultado || !resultado[0]) continue
-    const transcripcion = resultado[0].transcript
+    const transcripcion = resultado[0].transcript.trim()
+
+    // Android inyecta resultados finales vacios que estropearian ultimoFinal
+    if (!transcripcion) {
+      if (resultado.isFinal && i >= cerrados) cerrados = i + 1
+      continue
+    }
 
     if (resultado.isFinal) {
-      // Solo se acumula un resultado final la primera vez que se ve. Sin esta
-      // guarda, un evento reemitido volveria a pegar la misma frase.
       if (i >= cerrados) {
-        finalizado = unir(finalizado, transcripcion)
+        // Bug de Android Chrome: emite la frase creciente como multiples
+        // resultados finales nuevos. Si la nueva transcripcion empieza con
+        // la anterior y es mas larga, es una expansion, no una frase nueva.
+        if (ultimoFinal && transcripcion.startsWith(ultimoFinal) && transcripcion.length > ultimoFinal.length) {
+          finalizado = finalizado.slice(0, finalizado.length - ultimoFinal.length) + transcripcion
+        } else {
+          finalizado = unir(finalizado, transcripcion)
+        }
+        ultimoFinal = transcripcion
         cerrados = i + 1
       }
     } else {
@@ -93,7 +108,7 @@ export function aplicarResultado(
     }
   }
 
-  const nuevo: EstadoDictado = { ...estado, finalizado, resultadosCerrados: cerrados }
+  const nuevo: EstadoDictado = { ...estado, finalizado, resultadosCerrados: cerrados, ultimoFinal }
   return { estado: nuevo, texto: unir(nuevo.base, nuevo.finalizado, provisional) }
 }
 
