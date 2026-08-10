@@ -89,7 +89,7 @@ export function aplicarResultado(
         cerrados = i + 1
       }
     } else {
-      provisional = unir(provisional, transcripcion)
+      provisional = transcripcion // Solo nos interesa el ultimo estado provisional de la frase
     }
   }
 

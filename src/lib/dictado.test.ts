@@ -76,6 +76,17 @@ describe('aplicarResultado', () => {
     expect(texto).toBe('compramos verduras');
   });
 
+  it('no concatena multiples resultados provisionales simultaneos (bug de Android)', () => {
+    // Android Chrome a veces emite todo el historial de la frase creciendo
+    // como multiples resultados provisionales en un solo evento.
+    // El codigo no debe pegarlos juntos, sino quedarse solo con el ultimo.
+    const { texto } = reproducir(iniciarDictado(''), [
+      evento(0, ['compré', false], ['compré 5', false], ['compré 5 kg', false])
+    ]);
+
+    expect(texto).toBe('compré 5 kg');
+  });
+
   it('conserva lo que el usuario escribio a mano antes de dictar', () => {
     const { texto } = reproducir(iniciarDictado('Nota:'), [
       evento(0, ['compramos verduras', true])
