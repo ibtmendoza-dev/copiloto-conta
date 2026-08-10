@@ -81,10 +81,10 @@ describe('aplicarResultado', () => {
     // inyecta resultados isFinal: true nuevos con el historial acumulado.
     // Ademas inyecta strings vacios al inicio de la sesion.
     const { texto } = reproducir(iniciarDictado(''), [
-      evento(0, ['', true], ['', true], ['compré', true], ['compré 5', true], ['compré 5 kg', true])
+      evento(0, ['', true], ['', true], ['', true], ['', true], ['compré', true], ['compré', true], ['compré 5', true], ['compré 5', true], ['compré 5 kg', true], ['compré 5 kg de', true], ['compré 5 kg de bolsas', true], ['compré 5 kg de bolsas', true])
     ]);
 
-    expect(texto).toBe('compré 5 kg');
+    expect(texto).toBe('compré 5 kg de bolsas');
   });
 
   it('conserva lo que el usuario escribio a mano antes de dictar', () => {

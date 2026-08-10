@@ -94,8 +94,11 @@ export function aplicarResultado(
       if (i >= cerrados) {
         // Bug de Android Chrome: emite la frase creciente como multiples
         // resultados finales nuevos. Si la nueva transcripcion empieza con
-        // la anterior y es mas larga, es una expansion, no una frase nueva.
-        if (ultimoFinal && transcripcion.startsWith(ultimoFinal) && transcripcion.length > ultimoFinal.length) {
+        // la anterior, es una expansion, no una frase nueva. Y a veces
+        // emite duplicados exactos.
+        if (transcripcion === ultimoFinal) {
+          // Ignoramos el duplicado exacto de Android
+        } else if (ultimoFinal && transcripcion.startsWith(ultimoFinal)) {
           finalizado = finalizado.slice(0, finalizado.length - ultimoFinal.length) + transcripcion
         } else {
           finalizado = unir(finalizado, transcripcion)
