@@ -293,6 +293,8 @@ export default function CopilotChat() {
       textareaRef.current.style.height = 'auto'
     }
 
+    let shouldLogout = false
+
     try {
       if (!navigator.onLine) {
         throw new Error("offline");
@@ -339,7 +341,7 @@ export default function CopilotChat() {
         setMessages(prev => [...prev, responseMessage])
       } else {
         if (result.error?.includes('No autorizado')) {
-          await logoutAction();
+          shouldLogout = true;
           return;
         }
 
@@ -368,6 +370,10 @@ export default function CopilotChat() {
         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       }
       setMessages(prev => [...prev, errorMessage])
+    }
+
+    if (shouldLogout) {
+      await logoutAction()
     }
   }
 
