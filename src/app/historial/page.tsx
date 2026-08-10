@@ -47,9 +47,16 @@ export default async function HistorialPage() {
             <div key={mov.id} className="bg-neutral-900 border border-neutral-800 rounded-2xl p-4 flex flex-col gap-3">
               <div className="flex justify-between items-start">
                 <div>
-                  <span className="inline-block px-2 py-1 bg-neutral-800 text-xs font-medium text-neutral-300 rounded mb-2">
-                    {mov.tipo} • {mov.categoria || 'Sin categoría'}
-                  </span>
+                  <div className="flex flex-wrap gap-2 mb-2">
+                    <span className={`inline-block px-2 py-1 text-xs font-medium rounded ${
+                      mov.contexto === 'PERSONAL' ? 'bg-indigo-900/50 text-indigo-300 border border-indigo-800' : 'bg-blue-900/50 text-blue-300 border border-blue-800'
+                    }`}>
+                      {mov.contexto === 'PERSONAL' ? '🏠 Personal' : '🏢 Negocio'}
+                    </span>
+                    <span className="inline-block px-2 py-1 bg-neutral-800 text-xs font-medium text-neutral-300 rounded border border-neutral-700">
+                      {mov.tipo} • {mov.categoria || 'Sin categoría'}
+                    </span>
+                  </div>
                   <p className="text-neutral-200 text-sm whitespace-pre-wrap">{mov.descripcionOriginal}</p>
                 </div>
                 <div className="flex flex-col items-end gap-2">
