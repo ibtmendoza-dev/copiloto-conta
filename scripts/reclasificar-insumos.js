@@ -65,6 +65,25 @@ async function clasificarConIA(descripciones) {
   return descripciones.map((_, i) => porNumero.get(i + 1) || { esInsumo: false, motivo: 'sin veredicto de la IA' });
 }
 
+/**
+ * Lee la tabla que imprime este mismo guion y devuelve id → veredicto.
+ * Cada fila termina en "| motivo | id"; el veredicto es la tercera columna.
+ */
+function leerVeredictosGuardados(ruta) {
+  const mapa = new Map();
+  if (!ruta) return mapa;
+  const { readFileSync } = require('node:fs');
+  readFileSync(ruta, 'utf8').split(/\r?\n/).forEach((linea) => {
+    const partes = linea.split('|').map((p) => p.trim());
+    if (partes.length < 6 || !/^\d{4}-\d{2}-\d{2}$/.test(partes[0])) return;
+    const id = partes[partes.length - 1];
+    const veredicto = partes[2];
+    if (!/^[0-9a-f-]{36}$/.test(id)) return;
+    mapa.set(id, { esInsumo: veredicto === 'INSUMO', motivo: `${partes[partes.length - 2]} (revisado)` });
+  });
+  return mapa;
+}
+
 async function firestore() {
   const { initializeApp, applicationDefault, getApps } = await import('firebase-admin/app');
   const { getFirestore } = await import('firebase-admin/firestore');
@@ -89,7 +108,16 @@ async function main() {
     console.log(`${movimientos.length} movimientos del negocio fuera de INVENTARIO sin cruzar, con ${conceptos.length} conceptos.\n`);
     if (conceptos.length === 0) return;
 
-    const veredictos = await clasificarConIA(conceptos.map((c) => c.descripcion));
+    // `--desde=<archivo>`: reutiliza los veredictos de una corrida en seco ya
+    // revisada (el archivo con la tabla impresa), en vez de pedirlos otra vez.
+    // La IA no es determinista: lo que se escribe debe ser lo que se revisó.
+    // Los conceptos que no estén en el archivo sí van a la IA.
+    const guardados = leerVeredictosGuardados(listaDe('--desde=')[0]);
+    const sinVeredicto = conceptos.filter((c) => !guardados.has(c.id));
+    const deIA = sinVeredicto.length ? await clasificarConIA(sinVeredicto.map((c) => c.descripcion)) : [];
+    const porIdIA = new Map(sinVeredicto.map((c, i) => [c.id, deIA[i]]));
+    if (guardados.size) console.log(`${guardados.size} veredictos tomados del archivo revisado; ${sinVeredicto.length} pedidos a la IA.\n`);
+    const veredictos = conceptos.map((c) => guardados.get(c.id) || porIdIA.get(c.id));
     const filas = conceptos.map((c, i) => {
       let esInsumo = veredictos[i].esInsumo;
       let motivo = veredictos[i].motivo;
