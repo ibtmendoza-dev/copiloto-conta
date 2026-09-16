@@ -38,6 +38,9 @@ model Movimiento {
   
   // -- Metadatos del Sistema --
   idempotencyKey       String?  @unique
+  // Id del documento creado en entradas_almacen (LPS Platform) cuando el
+  // movimiento cruzo el puente; null si no ha cruzado (2026-09-16).
+  entradaAlmacenId     String?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 }
@@ -163,6 +166,9 @@ model Concepto {
   descripcion          String
   precioUnitario       Decimal?
   importeTotal         Decimal
+  // Insumo del negocio: viaja a la plataforma de produccion (2026-09-16).
+  // Lo marca la IA por articulo al extraer; ver src/lib/insumos.ts.
+  esInsumo             Boolean  @default(false)
   
   createdAt            DateTime @default(now())
 }

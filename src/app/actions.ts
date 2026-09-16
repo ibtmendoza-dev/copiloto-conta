@@ -9,6 +9,7 @@ import path from 'path'
 import { getSession } from '@/lib/auth'
 import { dbFirestore } from '@/lib/firebase'
 import { put } from '@vercel/blob'
+import { REGLAS_INSUMO, debeInyectar, articulosParaAlmacen, payloadEntradaAlmacen } from '@/lib/insumos'
 
 export async function createMovimiento(formData: { inputOriginal: string, imageBase64?: string, clientMessageId?: string }) {
   try {
@@ -84,7 +85,14 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
       REGLAS DE CONTEXTO (NEGOCIO VS PERSONAL):
       - Todo movimiento pertenece a un 'contexto'. Puede ser 'NEGOCIO' o 'PERSONAL'.
       - Si el usuario dice que es para la casa, gasto familiar, personal, o algo que claramente no es de la empresa, márcalo como 'PERSONAL'.
-      - Si no dice nada, o si es materia prima, mantenimiento de la empresa, inventario, etc., márcalo por defecto como 'NEGOCIO'.`,
+      - Si no dice nada, o si es materia prima, mantenimiento de la empresa, inventario, etc., márcalo por defecto como 'NEGOCIO'.
+
+      REGLAS DE CATEGORÍA PARA COMPRAS DEL NEGOCIO:
+      - 'INVENTARIO' cuando TODOS los artículos son insumos del negocio (ingredientes, empaques, desechables, consumibles de cocina), vengan de un proveedor o de un supermercado.
+      - 'ALIMENTOS' solo para comida consumida por las personas (tortas, refrescos, comidas del personal), no para ingredientes que se compran para producir.
+      - Si el ticket mezcla insumos con otras cosas, deja la categoría que domine y marca cada artículo con 'esInsumo'.
+
+      ${REGLAS_INSUMO}`,
       messages: [
         {
           role: 'user',
@@ -105,7 +113,8 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
             cantidad: z.number().describe('La cantidad adquirida del producto.'),
             descripcion: z.string().describe('El nombre o descripción del producto o servicio.'),
             precioUnitario: z.number().describe('El precio por unidad.'),
-            importeTotal: z.number().describe('El importe total por esta línea (cantidad * precio unitario).')
+            importeTotal: z.number().describe('El importe total por esta línea (cantidad * precio unitario).'),
+            esInsumo: z.boolean().describe('true si el artículo es un insumo del negocio (ingrediente, empaque, desechable, consumible de cocina); false si es propina, descuento, transporte, comida consumida, equipo, servicio o algo para la casa.')
           })).describe('OBLIGATORIO: Arreglo de artículos adquiridos. NUNCA lo omitas. Si no hay productos, devuelve un arreglo vacío [].'),
         })).describe('Lista de movimientos económicos identificados en el mensaje.')
       }),
@@ -163,6 +172,8 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
                 descripcion: art.descripcion,
                 precioUnitario: art.precioUnitario,
                 importeTotal: art.importeTotal,
+                // Un PERSONAL nunca lleva insumos, diga lo que diga la IA.
+                esInsumo: finalContext === 'NEGOCIO' && art.esInsumo === true,
               }))
             }
           },
@@ -187,27 +198,29 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
       // ==========================================
       // EL PUENTE FIREBASE (Inyección Directa)
       // ==========================================
-      if (movimiento.contexto === 'NEGOCIO' && movimiento.categoria === 'INVENTARIO') {
+      // Por ARTÍCULO, no por categoría (2026-09-16): cruza todo movimiento del
+      // negocio que tenga algún insumo, y solo viajan esos artículos. Ver
+      // src/lib/insumos.ts. La categoría INVENTARIO sigue valiendo "todo".
+      const paraAlmacen = {
+        ...movimiento,
+        importe: movimiento.importe as any,
+        conceptos: movimiento.conceptos.map((c) => ({
+          cantidad: Number(c.cantidad),
+          descripcion: c.descripcion,
+          precioUnitario: c.precioUnitario === null ? null : Number(c.precioUnitario),
+          importeTotal: Number(c.importeTotal),
+          esInsumo: c.esInsumo
+        }))
+      };
+      if (debeInyectar(paraAlmacen)) {
         if (dbFirestore) {
           try {
-            const aNumero = (valor: any) =>
-              valor === null || valor === undefined ? null : Number(valor);
-
-            const payload = {
-              fechaOcurrencia: movimiento.fechaOcurrencia,
-              origen: "Copiloto Conta (Finanzas)",
-              totalGastado: aNumero(movimiento.importe),
-              usuarioId: movimiento.usuarioId,
-              articulos: mov.articulos.map((art: any) => ({
-                cantidad: aNumero(art.cantidad),
-                descripcion: art.descripcion ?? null,
-                precioUnitario: aNumero(art.precioUnitario),
-                importeTotal: aNumero(art.importeTotal),
-              }))
-            };
-            
-            await dbFirestore.collection('entradas_almacen').add(payload);
-            console.log("✅ JSON inyectado exitosamente a Firebase Firestore");
+            const payload = payloadEntradaAlmacen(paraAlmacen, articulosParaAlmacen(paraAlmacen));
+            const ref = await dbFirestore.collection('entradas_almacen').add(payload);
+            // Se guarda el id del documento para no inyectar dos veces y para
+            // poder retirarlo si el movimiento se borra.
+            await prisma.movimiento.update({ where: { id: movimiento.id }, data: { entradaAlmacenId: ref.id } });
+            console.log(`✅ Entrada de almacén inyectada en Firestore (${ref.id}, ${payload.articulos.length} artículos)`);
           } catch (firebaseError: any) {
             console.error("❌ Error al inyectar JSON a Firebase:", firebaseError);
             avisos.push({
@@ -263,8 +276,24 @@ export async function deleteMovimiento(id: string) {
     await prisma.comprobante.deleteMany({ where: { movimientoId: id } });
     await prisma.movimiento.delete({ where: { id } });
 
-    // TODO: Eliminar de Firebase si es inventario, pero por ahora en MVP basta borrarlo localmente.
-    
+    // Si el movimiento había cruzado el puente, su entrada de almacén se
+    // retira también (2026-09-16): antes quedaba huérfana en la plataforma.
+    // Si Firestore falla, el borrado contable ya está hecho y se avisa.
+    let avisoAlmacen: string | null = null;
+    if (movimiento.entradaAlmacenId) {
+      if (dbFirestore) {
+        try {
+          await dbFirestore.collection('entradas_almacen').doc(movimiento.entradaAlmacenId).delete();
+        } catch (firebaseError: any) {
+          avisoAlmacen = `El movimiento se borró, pero su entrada de almacén no: ${firebaseError?.message ?? String(firebaseError)}`;
+          console.error('❌ No se pudo retirar la entrada de almacén:', firebaseError);
+        }
+      } else {
+        avisoAlmacen = 'El movimiento se borró, pero su entrada de almacén sigue en la plataforma: Firestore no está configurado en este despliegue.';
+      }
+    }
+    if (avisoAlmacen) return { success: true, aviso: avisoAlmacen };
+
     return { success: true };
   } catch (error: any) {
     console.error('Error al borrar movimiento:', error);
