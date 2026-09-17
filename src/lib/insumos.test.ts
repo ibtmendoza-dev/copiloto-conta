@@ -1,6 +1,6 @@
 // Pruebas del puente por artículo (insumos.ts). Puras: sin base ni Firestore.
 import { describe, it, expect } from 'vitest';
-import { articulosParaAlmacen, debeInyectar, payloadEntradaAlmacen, REGLAS_INSUMO, type MovimientoParaAlmacen } from './insumos';
+import { articulosParaAlmacen, debeInyectar, payloadEntradaAlmacen, accionDePuente, REGLAS_INSUMO, type MovimientoParaAlmacen } from './insumos';
 
 const fecha = new Date('2026-09-11T20:00:00.000Z');
 const costco: MovimientoParaAlmacen = {
@@ -22,9 +22,11 @@ describe('articulosParaAlmacen', () => {
     expect(articulosParaAlmacen(costco).map((a) => a.descripcion)).toEqual(['QUESO PANELA 1.1KG', 'CHAMP. BLANCO 1 KG']);
   });
 
-  it('con categoría INVENTARIO viajan todos, marcados o no (lo capturado antes del cambio)', () => {
-    const inventario = { ...costco, categoria: 'INVENTARIO', conceptos: costco.conceptos.map((c) => ({ ...c, esInsumo: undefined })) };
-    expect(articulosParaAlmacen(inventario)).toHaveLength(3);
+  it('la categoría INVENTARIO no es un caso aparte: manda la marca de cada artículo', () => {
+    const inventario = { ...costco, categoria: 'INVENTARIO' };
+    expect(articulosParaAlmacen(inventario)).toHaveLength(2);
+    const sinMarcas = { ...inventario, conceptos: costco.conceptos.map((c) => ({ ...c, esInsumo: undefined })) };
+    expect(articulosParaAlmacen(sinMarcas)).toEqual([]);
   });
 
   it('sin conceptos no hay nada', () => {
@@ -61,6 +63,21 @@ describe('payloadEntradaAlmacen', () => {
     const p = payloadEntradaAlmacen({ ...costco, importe: { toString: () => '99.9' }, conceptos: [{ cantidad: 1, descripcion: 'X', precioUnitario: null, importeTotal: 10, esInsumo: true }] });
     expect(p.importeMovimiento).toBe(99.9);
     expect(p.articulos[0].precioUnitario).toBeNull();
+  });
+});
+
+describe('accionDePuente', () => {
+  const sinInsumos = { ...costco, conceptos: costco.conceptos.map((c) => ({ ...c, esInsumo: false })) };
+
+  it('crear cuando debe y no tiene; actualizar cuando debe y tiene', () => {
+    expect(accionDePuente({ ...costco, entradaAlmacenId: null })).toBe('crear');
+    expect(accionDePuente({ ...costco, entradaAlmacenId: 'doc-1' })).toBe('actualizar');
+  });
+
+  it('retirar cuando ya no debe pero tiene; nada cuando ni debe ni tiene', () => {
+    expect(accionDePuente({ ...sinInsumos, entradaAlmacenId: 'doc-1' })).toBe('retirar');
+    expect(accionDePuente({ ...sinInsumos, entradaAlmacenId: null })).toBe('nada');
+    expect(accionDePuente({ ...costco, contexto: 'PERSONAL', entradaAlmacenId: 'doc-1' })).toBe('retirar');
   });
 });
 

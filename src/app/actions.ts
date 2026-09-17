@@ -9,7 +9,7 @@ import path from 'path'
 import { getSession } from '@/lib/auth'
 import { dbFirestore } from '@/lib/firebase'
 import { put } from '@vercel/blob'
-import { REGLAS_INSUMO, debeInyectar, articulosParaAlmacen, payloadEntradaAlmacen } from '@/lib/insumos'
+import { REGLAS_INSUMO, debeInyectar, articulosParaAlmacen, payloadEntradaAlmacen, accionDePuente } from '@/lib/insumos'
 
 export async function createMovimiento(formData: { inputOriginal: string, imageBase64?: string, clientMessageId?: string }) {
   try {
@@ -172,8 +172,10 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
                 descripcion: art.descripcion,
                 precioUnitario: art.precioUnitario,
                 importeTotal: art.importeTotal,
-                // Un PERSONAL nunca lleva insumos, diga lo que diga la IA.
-                esInsumo: finalContext === 'NEGOCIO' && art.esInsumo === true,
+                // Un PERSONAL nunca lleva insumos, diga lo que diga la IA; en un
+                // INVENTARIO todos lo son (la categoría significa eso). El puente
+                // solo mira esta marca, artículo por artículo.
+                esInsumo: finalContext === 'NEGOCIO' && (mov.categoria === 'INVENTARIO' || art.esInsumo === true),
               }))
             }
           },
@@ -298,5 +300,81 @@ export async function deleteMovimiento(id: string) {
   } catch (error: any) {
     console.error('Error al borrar movimiento:', error);
     return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Cambia la marca de insumo de un artículo desde el historial (2026-09-16)
+ * y vuelve a sincronizar la entrada de almacén del movimiento en la
+ * plataforma: crear si gana su primer insumo, actualizar si ya tenía, retirar
+ * si se queda sin ninguno. Mismas reglas de permiso que borrar: el dueño en
+ * sus 24 horas, o un ADMIN.
+ */
+export async function setConceptoInsumo(conceptoId: string, esInsumo: boolean) {
+  try {
+    const session = await getSession();
+    if (!session) throw new Error('No autorizado');
+
+    const concepto = await prisma.concepto.findUnique({ where: { id: conceptoId }, include: { movimiento: true } });
+    if (!concepto) throw new Error('Artículo no encontrado');
+    const mov = concepto.movimiento;
+    if (session.usuario.rol !== 'ADMIN') {
+      if (mov.usuarioId !== session.usuario.id) throw new Error('No estás autorizado para cambiar registros de otros usuarios.');
+      const horas = (Date.now() - mov.createdAt.getTime()) / (1000 * 60 * 60);
+      if (horas > 24) throw new Error('Solo puedes cambiar registros que hayas creado en las últimas 24 horas.');
+    }
+    if (mov.contexto !== 'NEGOCIO' && esInsumo) {
+      throw new Error('Un movimiento personal no lleva insumos del negocio.');
+    }
+
+    await prisma.concepto.update({ where: { id: conceptoId }, data: { esInsumo } });
+    const aviso = await sincronizarEntradaAlmacen(mov.id);
+    return { success: true, aviso };
+  } catch (error: any) {
+    console.error('Error al cambiar la marca de insumo:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Deja la entrada de almacén del movimiento como debe estar según sus
+ * artículos de hoy. Devuelve un aviso en texto si la plataforma no se pudo
+ * tocar; nunca lanza, porque el cambio contable ya está hecho.
+ */
+async function sincronizarEntradaAlmacen(movimientoId: string): Promise<string | null> {
+  const movimiento = await prisma.movimiento.findUnique({ where: { id: movimientoId }, include: { conceptos: true } });
+  if (!movimiento) return null;
+  const paraAlmacen = {
+    ...movimiento,
+    importe: movimiento.importe as any,
+    conceptos: movimiento.conceptos.map((c) => ({
+      cantidad: Number(c.cantidad),
+      descripcion: c.descripcion,
+      precioUnitario: c.precioUnitario === null ? null : Number(c.precioUnitario),
+      importeTotal: Number(c.importeTotal),
+      esInsumo: c.esInsumo
+    }))
+  };
+  const accion = accionDePuente(paraAlmacen);
+  if (accion === 'nada') return null;
+  if (!dbFirestore) return 'La marca se guardó, pero la plataforma no se actualizó: Firestore no está configurado en este despliegue.';
+  try {
+    const coleccion = dbFirestore.collection('entradas_almacen');
+    if (accion === 'retirar') {
+      await coleccion.doc(movimiento.entradaAlmacenId!).delete();
+      await prisma.movimiento.update({ where: { id: movimiento.id }, data: { entradaAlmacenId: null } });
+      return null;
+    }
+    const payload = payloadEntradaAlmacen(paraAlmacen, articulosParaAlmacen(paraAlmacen));
+    if (accion === 'actualizar') {
+      await coleccion.doc(movimiento.entradaAlmacenId!).set(payload);
+      return null;
+    }
+    const ref = await coleccion.add(payload);
+    await prisma.movimiento.update({ where: { id: movimiento.id }, data: { entradaAlmacenId: ref.id } });
+    return null;
+  } catch (firebaseError: any) {
+    console.error('❌ No se pudo sincronizar la entrada de almacén:', firebaseError);
+    return `La marca se guardó, pero la plataforma no se actualizó: ${firebaseError?.message ?? String(firebaseError)}`;
   }
 }

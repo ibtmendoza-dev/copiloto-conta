@@ -4,6 +4,7 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { ArrowLeft } from 'lucide-react'
 import DeleteMovimientoButton from '@/components/DeleteMovimientoButton'
+import InsumoCheckbox from '@/components/InsumoCheckbox'
 
 export default async function HistorialPage() {
   const session = await getSession();
@@ -72,9 +73,16 @@ export default async function HistorialPage() {
                   <p className="text-xs font-semibold text-neutral-500 mb-2 uppercase tracking-wider">Artículos Capturados</p>
                   <ul className="space-y-1">
                     {mov.conceptos.map(cat => (
-                      <li key={cat.id} className="text-sm text-neutral-400 flex justify-between">
+                      <li key={cat.id} className="text-sm text-neutral-400 flex justify-between items-center gap-3">
                         <span>{Number(cat.cantidad)}x {cat.descripcion}</span>
-                        <span>${Number(cat.importeTotal).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</span>
+                        <span className="flex items-center gap-3 shrink-0">
+                          {/* La marca la puso la IA al capturar; aquí se corrige y
+                              la entrada de almacén se vuelve a sincronizar. */}
+                          {mov.contexto === 'NEGOCIO' && (
+                            <InsumoCheckbox conceptoId={cat.id} esInsumo={cat.esInsumo} />
+                          )}
+                          <span>${Number(cat.importeTotal).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</span>
+                        </span>
                       </li>
                     ))}
                   </ul>

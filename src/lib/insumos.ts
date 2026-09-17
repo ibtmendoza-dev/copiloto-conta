@@ -48,16 +48,36 @@ export const REGLAS_INSUMO: string = reglas.REGLAS_INSUMO;
 const aNumero = (valor: unknown): number | null =>
   (valor === null || valor === undefined ? null : Number(valor));
 
-/** Los artículos que viajan a la plataforma: todos si la categoría es INVENTARIO, si no los marcados. */
+/**
+ * Los artículos que viajan a la plataforma: los marcados como insumo, y solo
+ * ellos. La categoría INVENTARIO ya no es un caso aparte: al capturar, un
+ * movimiento INVENTARIO marca todos sus artículos (ver actions.ts), y los
+ * capturados antes del 2026-09-16 se marcaron con
+ * scripts/marcar-inventario-como-insumo.js. Así la casilla del historial
+ * puede quitar la marca a un artículo suelto y el puente le hace caso.
+ */
 export function articulosParaAlmacen(mov: MovimientoParaAlmacen): ArticuloExtraido[] {
   const todos = Array.isArray(mov.conceptos) ? mov.conceptos : [];
-  if (mov.categoria === 'INVENTARIO') return todos;
   return todos.filter((a) => a.esInsumo === true);
 }
 
 /** Solo movimientos del negocio con algún insumo cruzan el puente. */
 export function debeInyectar(mov: MovimientoParaAlmacen): boolean {
   return mov.contexto === 'NEGOCIO' && articulosParaAlmacen(mov).length > 0;
+}
+
+/**
+ * Qué le toca al puente tras un cambio en el movimiento (una marca de insumo
+ * que cambió, por ejemplo), según si ya tiene entrada en la plataforma y si
+ * hoy debe tenerla.
+ */
+export function accionDePuente(mov: MovimientoParaAlmacen & { entradaAlmacenId?: string | null }): 'crear' | 'actualizar' | 'retirar' | 'nada' {
+  const tiene = Boolean(mov.entradaAlmacenId);
+  const debe = debeInyectar(mov);
+  if (debe && !tiene) return 'crear';
+  if (debe && tiene) return 'actualizar';
+  if (!debe && tiene) return 'retirar';
+  return 'nada';
 }
 
 /**
