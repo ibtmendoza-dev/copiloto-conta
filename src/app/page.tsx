@@ -39,6 +39,10 @@ export default function CopilotChat() {
   // Al enviar hay que tirar lo que llegue tarde del reconocedor; al parar el
   // microfono a mano, no, porque la ultima frase llega despues de `stop()`.
   const descartarDictadoRef = useRef<boolean>(false)
+  // El ticket guardado sin conexión que espera que el usuario diga qué es
+  // (2026-10-12, src/lib/detalle.ts). Sigue en la cola hasta que la respuesta
+  // con esa foto se registre: si se cierra la app, se vuelve a preguntar.
+  const colaPorDetallarRef = useRef<{ id: number, imagen: string | null } | null>(null)
 
   const anotarDictado = (linea: string) => {
     setRegistroDictado((previo) => [...previo.slice(-59), linea])
@@ -77,13 +81,20 @@ export default function CopilotChat() {
         }]);
         
         let syncedCount = 0;
+        let porDetallar: { item: any, pregunta: string } | null = null;
         for (const item of pending) {
           try {
-            await createMovimiento({
+            const result = await createMovimiento({
               inputOriginal: item.inputOriginal,
               imageBase64: item.imageBase64,
               clientMessageId: item.clientMessageId
             });
+            // No se registró: falta que el usuario diga qué es. Se queda en la
+            // cola y los demás esperan a que conteste (la casilla es una sola).
+            if (result.faltaDetalle) {
+              porDetallar = { item, pregunta: result.pregunta || '' };
+              break;
+            }
             await deletePendingMovement(item.id);
             syncedCount++;
           } catch (e) {
@@ -96,7 +107,22 @@ export default function CopilotChat() {
           setMessages(prev => [...prev, {
             id: Date.now() + 1,
             role: "assistant",
-            content: `✅ ¡Sincronización completada! Tus movimientos ya están en la nube.`,
+            content: porDetallar
+              ? `✅ Ya están en la nube ${syncedCount} de ${pending.length}. Los demás siguen guardados en el celular.`
+              : `✅ ¡Sincronización completada! Tus movimientos ya están en la nube.`,
+            time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          }]);
+        }
+
+        if (porDetallar) {
+          const { item, pregunta } = porDetallar;
+          colaPorDetallarRef.current = { id: item.id, imagen: item.imageBase64 || null };
+          setAttachedImage(item.imageBase64 || null);
+          setNewMessage({ content: item.inputOriginal || "" });
+          setMessages(prev => [...prev, {
+            id: Date.now() + 2,
+            role: "assistant",
+            content: `De lo guardado sin conexión:\n${pregunta}`,
             time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
           }]);
         }
@@ -344,6 +370,27 @@ export default function CopilotChat() {
           time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         }
         setMessages(prev => [...prev, responseMessage])
+
+        // Si era la respuesta por un ticket de la cola, ese ticket ya quedó:
+        // se saca de la cola y se sigue con los demás.
+        const porDetallar = colaPorDetallarRef.current
+        if (porDetallar && porDetallar.imagen === imageToSend) {
+          colaPorDetallarRef.current = null
+          await deletePendingMovement(porDetallar.id)
+          syncPendingMovements()
+        }
+      } else if (result.faltaDetalle) {
+        // No se registró nada: la foto y lo escrito vuelven a la casilla para
+        // que la respuesta del usuario viaje con ellos (src/lib/detalle.ts).
+        setAttachedImage(imageToSend)
+        setNewMessage({ content: contentToSend ? `${contentToSend} ` : "" })
+        setMessages(prev => [...prev, {
+          id: Date.now() + 1,
+          role: "assistant",
+          content: result.pregunta || "",
+          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        }])
+        textareaRef.current?.focus()
       } else {
         if (result.error?.includes('No autorizado')) {
           shouldLogout = true;
@@ -367,6 +414,13 @@ export default function CopilotChat() {
         imageBase64: imageToSend || undefined,
         clientMessageId
       });
+      // La respuesta, con su foto, sustituye en la cola al ticket que
+      // preguntaba: si se quedaran los dos, se registraría dos veces.
+      const porDetallar = colaPorDetallarRef.current
+      if (porDetallar && porDetallar.imagen === imageToSend) {
+        colaPorDetallarRef.current = null
+        await deletePendingMovement(porDetallar.id)
+      }
 
       const errorMessage = {
         id: Date.now() + 1,

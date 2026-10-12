@@ -12,6 +12,7 @@ import { put } from '@vercel/blob'
 import { REGLAS_INSUMO, debeInyectar, articulosParaAlmacen, payloadEntradaAlmacen, accionDePuente } from '@/lib/insumos'
 import { COLECCION_ESPEJO, debeEspejar, payloadMovimientoFinanzas } from '@/lib/espejo.mjs'
 import { NINGUNA, hoyEnMexico, catalogoDePropuesta, hayCatalogo, instruccionDePropuesta, normalizarPropuesta, textoDePropuesta } from '@/lib/propuesta.mjs'
+import { articulosSinIdentificar, preguntaPorDetalle } from '@/lib/detalle'
 
 export async function createMovimiento(formData: { inputOriginal: string, imageBase64?: string, clientMessageId?: string }) {
   try {
@@ -30,22 +31,6 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
       base64Content = formData.imageBase64.split(',')[1];
       const tipoDeclarado = formData.imageBase64.match(/^data:([^;,]+)[;,]/)?.[1];
       if (tipoDeclarado) mediaType = tipoDeclarado;
-
-      try {
-        const extension = (mediaType.split('/')[1] || 'jpg').replace(/[^a-z0-9]/gi, '');
-        const blob = await put(
-          `comprobantes/${session.usuario.id}/${Date.now()}.${extension}`,
-          Buffer.from(base64Content, 'base64'),
-          { access: 'private', contentType: mediaType, addRandomSuffix: true }
-        );
-        fileUrl = blob.url;
-      } catch (blobError: any) {
-        console.error("❌ Error al subir el comprobante a Vercel Blob:", blobError);
-        avisos.push({
-          tipo: 'COMPROBANTE',
-          motivo: `No se pudo guardar la imagen del comprobante: ${blobError?.message ?? String(blobError)}`
-        });
-      }
     }
 
     const messagesContent: any[] = [
@@ -85,6 +70,8 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
       - Si el usuario menciona múltiples productos de diferentes proveedores o naturalezas, sepáralos en múltiples 'movimientos'. Si los compró en la misma tienda, ponlos como múltiples 'articulos' dentro de un solo 'movimiento'.
       - HAZ LA MATEMÁTICA CORRECTA: Si el usuario dice "2 bidones a 640 cada uno", la 'cantidad' es 2, 'precioUnitario' es 640, y el 'importeTotal' de esa línea es 1280.
       - El 'importe' del movimiento DEBE coincidir con la suma exacta de los 'importeTotal' de todos sus articulos.
+      - Si no puedes saber qué es un artículo (el ticket no lo dice o no se lee, y el mensaje tampoco), NO inventes un nombre ni pongas uno genérico como "Insumo / Producto": escribe lo que sí se lea y marca 'identificado' en false. El sistema le preguntará al usuario.
+      - Lo que el usuario escriba manda sobre lo que leas en el ticket: si dice qué es un artículo, cuántos fueron o a cuánto, usa lo que dice.
       
       TABLA DE EXCEPCIONES FISCALES (MÉXICO) PARA CALCULO CIEGO:
       Antes de calcular el IVA a ciegas, clasifica los "articulos" que identificaste contra esta tabla:
@@ -126,6 +113,7 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
           articulos: z.array(z.object({
             cantidad: z.number().describe('La cantidad adquirida del producto.'),
             descripcion: z.string().describe('El nombre o descripción del producto o servicio.'),
+            identificado: z.boolean().describe('true si sabes qué es el artículo porque el ticket o el mensaje lo dicen; false si no se alcanza a leer y tendrías que adivinarlo.'),
             precioUnitario: z.number().describe('El precio por unidad.'),
             importeTotal: z.number().describe('El importe total por esta línea (cantidad * precio unitario).'),
             esInsumo: z.boolean().describe('true si el artículo es un insumo del negocio (ingrediente, empaque, desechable, consumible de cocina); false si es propina, descuento, transporte, comida consumida, equipo, servicio o algo para la casa.'),
@@ -144,6 +132,34 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
           success: false, 
           error: `No detecté el precio de "${itemNames}". Por favor, intenta de nuevo especificando cuánto costó.` 
         };
+      }
+    }
+
+    // === LO QUE NO SE SABE QUÉ ES (2026-10-12, src/lib/detalle.ts) ===
+    // No se guarda nada: se le pregunta al usuario, y la pantalla deja la foto
+    // adjunta para que su respuesta viaje con ella.
+    const faltan = articulosSinIdentificar(object.movimientos);
+    if (faltan.length > 0) {
+      return { success: false, faltaDetalle: true, pregunta: preguntaPorDetalle(faltan, { conImagen: Boolean(base64Content) }) };
+    }
+
+    // El comprobante se sube hasta aquí, cuando ya se va a guardar: lo que se
+    // devuelve antes no deja imágenes huérfanas en Vercel Blob.
+    if (base64Content) {
+      try {
+        const extension = (mediaType.split('/')[1] || 'jpg').replace(/[^a-z0-9]/gi, '');
+        const blob = await put(
+          `comprobantes/${session.usuario.id}/${Date.now()}.${extension}`,
+          Buffer.from(base64Content, 'base64'),
+          { access: 'private', contentType: mediaType, addRandomSuffix: true }
+        );
+        fileUrl = blob.url;
+      } catch (blobError: any) {
+        console.error("❌ Error al subir el comprobante a Vercel Blob:", blobError);
+        avisos.push({
+          tipo: 'COMPROBANTE',
+          motivo: `No se pudo guardar la imagen del comprobante: ${blobError?.message ?? String(blobError)}`
+        });
       }
     }
 
