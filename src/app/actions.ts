@@ -11,7 +11,7 @@ import { dbFirestore } from '@/lib/firebase'
 import { put } from '@vercel/blob'
 import { REGLAS_INSUMO, debeInyectar, articulosParaAlmacen, payloadEntradaAlmacen, accionDePuente } from '@/lib/insumos'
 import { COLECCION_ESPEJO, debeEspejar, payloadMovimientoFinanzas } from '@/lib/espejo.mjs'
-import { NINGUNA, hoyEnMexico, catalogoDePropuesta, hayCatalogo, instruccionDePropuesta, normalizarPropuesta, textoDePropuesta } from '@/lib/propuesta.mjs'
+import { NINGUNA, NUEVO, COLECCIONES_TIPOS, COLECCION_TIPOS_COPILOTO, hoyEnMexico, catalogoDePropuesta, hayCatalogo, hayTipos, instruccionDePropuesta, normalizarPropuesta, textoDePropuesta, datosDeTipoNuevo } from '@/lib/propuesta.mjs'
 import { articulosSinIdentificar, preguntaPorDetalle } from '@/lib/detalle'
 
 export async function createMovimiento(formData: { inputOriginal: string, imageBase64?: string, clientMessageId?: string }) {
@@ -49,6 +49,10 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
     const conPropuesta = hayCatalogo(catalogo);
     const idsCuenta: [string, ...string[]] = [NINGUNA, ...catalogo.cuentas.map((c: { id: string }) => c.id)];
     const idsPdv: [string, ...string[]] = [NINGUNA, ...catalogo.pdvs.map((p: { id: string }) => p.id)];
+    // Los tipos de gasto (2026-10-12, incremento 9): la lista de la caja y la
+    // del Copiloto, más "nuevo" para pedir uno.
+    const conTipos = hayTipos(catalogo);
+    const idsTipo: [string, ...string[]] = [NINGUNA, NUEVO, ...catalogo.tipos.map((t: { id: string }) => t.id)];
 
     const { object } = await generateObject({
       model: google('gemini-3.6-flash'), // Versión 2026
@@ -117,7 +121,9 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
             precioUnitario: z.number().describe('El precio por unidad.'),
             importeTotal: z.number().describe('El importe total por esta línea (cantidad * precio unitario).'),
             esInsumo: z.boolean().describe('true si el artículo es un insumo del negocio (ingrediente, empaque, desechable, consumible de cocina); false si es propina, descuento, transporte, comida consumida, equipo, servicio o algo para la casa.'),
-            cuentaCosto: (conPropuesta ? z.enum(idsCuenta) : z.string()).optional().describe(`El id de la cuenta de costo del artículo, de la lista; "${NINGUNA}" si ninguna le queda clara.`)
+            cuentaCosto: (conPropuesta ? z.enum(idsCuenta) : z.string()).optional().describe(`El id de la cuenta de costo del artículo, de la lista; "${NINGUNA}" si ninguna le queda clara.`),
+            tipoGasto: (conTipos ? z.enum(idsTipo) : z.string()).optional().describe(`El id del tipo de gasto del artículo, de la lista; "${NUEVO}" si ninguno le queda; "${NINGUNA}" en lo personal.`),
+            tipoNuevo: z.string().optional().describe(`Solo con "${NUEVO}": el nombre corto y general del tipo nuevo, de una a tres palabras.`)
           })).describe('OBLIGATORIO: Arreglo de artículos adquiridos. NUNCA lo omitas. Si no hay productos, devuelve un arreglo vacío [].'),
         })).describe('Lista de movimientos económicos identificados en el mensaje.')
       }),
@@ -166,6 +172,9 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
     const savedMovimientos = [];
     // Lo propuesto para Costos, en texto para el chat, uno por movimiento guardado.
     const propuestas: string[] = [];
+    // Los tipos nuevos ya creados en esta captura: dos artículos con el mismo
+    // tipo nuevo crean uno solo.
+    const tiposCreados = new Set<string>();
 
     let index = 0;
     for (const mov of object.movimientos) {
@@ -174,6 +183,8 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
       const key = formData.clientMessageId ? `${formData.clientMessageId}-${index}` : undefined;
       // Revisada contra el catálogo: lo que no existe ahí no se guarda.
       const propuesta = normalizarPropuesta({ contexto: finalContext, sucursal: mov.sucursal, fechaGasto: mov.fechaGasto, articulos: mov.articulos }, catalogo, hoy);
+      const avisoTipos = await crearTiposNuevos(propuesta.tipos, tiposCreados, session.usuario.id);
+      if (avisoTipos) avisos.push({ tipo: 'COSTOS', motivo: avisoTipos });
 
       let movimiento;
       try {
@@ -214,6 +225,7 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
                 // solo mira esta marca, artículo por artículo.
                 esInsumo: finalContext === 'NEGOCIO' && (mov.categoria === 'INVENTARIO' || art.esInsumo === true),
                 cuentaCostoPropuesta: propuesta.cuentas[i],
+                tipoGastoId: propuesta.tipos[i]?.id ?? null,
               }))
             }
           },
@@ -477,12 +489,46 @@ async function cargarCatalogo() {
   if (catalogoEnMemoria && Date.now() - catalogoEnMemoria.leido < MINUTOS_CATALOGO * 60 * 1000) return catalogoEnMemoria.catalogo;
   if (!dbFirestore) return catalogoDePropuesta([], []);
   try {
-    const [cuentas, pdvs] = await Promise.all([dbFirestore.collection('cuentas_costo').get(), dbFirestore.collection('puntos_venta').get()]);
-    const catalogo = catalogoDePropuesta(cuentas.docs.map((d) => ({ id: d.id, ...d.data() })), pdvs.docs.map((d) => ({ id: d.id, ...d.data() })));
+    const db = dbFirestore;
+    const [cuentas, pdvs, ...tipos] = await Promise.all(['cuentas_costo', 'puntos_venta', ...COLECCIONES_TIPOS].map((c) => db.collection(c).get()));
+    const docs = (snap: FirebaseFirestore.QuerySnapshot) => snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const catalogo = catalogoDePropuesta(docs(cuentas), docs(pdvs), tipos.flatMap(docs));
     catalogoEnMemoria = { leido: Date.now(), catalogo };
     return catalogo;
   } catch (error) {
     console.error('❌ No se pudo leer el catálogo de la plataforma; la captura sigue sin propuesta:', error);
     return catalogoDePropuesta([], []);
   }
+}
+
+/**
+ * Crea en la plataforma los tipos nuevos que pidió la IA (2026-10-12,
+ * incremento 9): sin cuenta, con la que sugirió; Dirección se la da una vez.
+ * `create` no pisa: si otra captura lo creó un instante antes, ese se queda.
+ * Devuelve un aviso si alguno no se pudo guardar; nunca lanza, porque el
+ * artículo se guarda con su tipo de todos modos y la plataforma lo resuelve
+ * cuando el tipo exista.
+ */
+async function crearTiposNuevos(tipos: Array<{ id: string, nuevo?: { nombre: string, cuentaSugerida: string | null } } | null>, creados: Set<string>, usuarioId: string): Promise<string | null> {
+  const nuevos = tipos.filter((t): t is { id: string, nuevo: { nombre: string, cuentaSugerida: string | null } } => Boolean(t?.nuevo) && !creados.has(t!.id));
+  if (nuevos.length === 0) return null;
+  if (!dbFirestore) return 'Los tipos de gasto nuevos no llegaron a la plataforma: Firestore no está configurado en este despliegue.';
+  const fallidos: string[] = [];
+  for (const t of nuevos) {
+    if (creados.has(t.id)) continue;
+    try {
+      await dbFirestore.collection(COLECCION_TIPOS_COPILOTO).doc(t.id).create(datosDeTipoNuevo(t.nuevo, { usuarioId }));
+    } catch (error: any) {
+      // 6 = ALREADY_EXISTS: ya está, que es lo que se quería.
+      if (error?.code !== 6) {
+        console.error('❌ No se pudo crear el tipo de gasto nuevo:', error);
+        fallidos.push(t.nuevo.nombre);
+        continue;
+      }
+    }
+    creados.add(t.id);
+    // La próxima captura ya lo ve en la lista.
+    catalogoEnMemoria = null;
+  }
+  return fallidos.length ? `Los tipos de gasto nuevos ${fallidos.map((n) => `«${n}»`).join(', ')} no llegaron a la plataforma; el movimiento sí quedó registrado.` : null;
 }

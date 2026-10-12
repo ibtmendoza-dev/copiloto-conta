@@ -53,7 +53,7 @@ describe('payloadMovimientoFinanzas', () => {
     expect(p).toMatchObject({
       movimientoId: 'mov-renta',
       origen: 'copiloto-conta',
-      version: 2,
+      version: 3,
       contexto: 'NEGOCIO',
       tipo: 'GASTO',
       categoria: 'OTROS',
@@ -81,7 +81,7 @@ describe('payloadMovimientoFinanzas', () => {
     expect(p.importe).toBe(1700.51);
     expect(p.subtotal).toBe(1466);
     expect(p.iva).toBe(234.5);
-    expect(p.conceptos[0]).toEqual({ id: 'c-2', cantidad: 0.125, descripcion: 'QUESO PANELA', precioUnitario: 1200, importeTotal: 150, esInsumo: true, cuentaPropuesta: null });
+    expect(p.conceptos[0]).toEqual({ id: 'c-2', cantidad: 0.125, descripcion: 'QUESO PANELA', precioUnitario: 1200, importeTotal: 150, esInsumo: true, cuentaPropuesta: null, tipoGasto: null });
   });
 
   it('viajan TODOS los artículos, no solo los insumos, cada uno con su marca', () => {
@@ -153,7 +153,7 @@ describe('la propuesta para Costos (versión 2, 2026-10-12)', () => {
       conceptos: costco.conceptos.map((c, i) => ({ ...c, cuentaCostoPropuesta: i === 1 ? 'equipo-menor' : null }))
     };
     const p = payloadMovimientoFinanzas(conPropuesta, ahora);
-    expect(p).toMatchObject({ version: 2, idPdvPropuesto: 'sucursal-calle11', fechaGasto: '2026-10-04' });
+    expect(p).toMatchObject({ version: 3, idPdvPropuesto: 'sucursal-calle11', fechaGasto: '2026-10-04' });
     expect(p.conceptos.map((c) => c.cuentaPropuesta)).toEqual([null, 'equipo-menor', null]);
   });
 
@@ -173,3 +173,21 @@ describe('la propuesta para Costos (versión 2, 2026-10-12)', () => {
     expect(cotejarEspejo([otra], [p]).difieren).toHaveLength(1);
   });
 });
+
+describe('el tipo de gasto (versión 3, 2026-10-12)', () => {
+  it('viaja el tipo que eligió la IA en cada artículo', () => {
+    const conTipo = { ...costco, conceptos: costco.conceptos.map((c, i) => ({ ...c, tipoGastoId: i === 0 ? 'ingredientes' : null })) };
+    const p = payloadMovimientoFinanzas(conTipo, ahora);
+    expect(p.version).toBe(3);
+    expect(p.conceptos.map((c) => c.tipoGasto)).toEqual(['ingredientes', null, null]);
+  });
+
+  it('un documento de antes, sin tipo, coteja igual que uno sin tipo; si el tipo cambió, difiere', () => {
+    const p = payloadMovimientoFinanzas(renta, ahora);
+    const deVersion2 = { ...p, version: 2, conceptos: p.conceptos.map(({ tipoGasto, ...c }) => c) };
+    expect(cotejarEspejo([p], [deVersion2]).cuadra).toBe(true);
+    const otro = { ...p, conceptos: p.conceptos.map((c) => ({ ...c, tipoGasto: 'renta-de-cocina' })) };
+    expect(cotejarEspejo([otro], [p]).difieren).toHaveLength(1);
+  });
+});
+

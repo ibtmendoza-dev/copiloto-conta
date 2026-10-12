@@ -181,6 +181,10 @@ model Concepto {
   // La cuenta de costo que propone la IA (un id de `cuentas_costo` de la
   // plataforma), 2026-10-12. Ver src/lib/propuesta.mjs.
   cuentaCostoPropuesta String?
+  // El tipo de gasto que eligió la IA (un id de `tipos_gasto` o de
+  // `tipos_gasto_copiloto` de la plataforma), 2026-10-12, incremento 9: en
+  // Costos decide la cuenta de lo que ninguna regla reconoce.
+  tipoGastoId          String?
 
   createdAt            DateTime @default(now())
 }

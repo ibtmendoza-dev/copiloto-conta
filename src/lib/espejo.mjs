@@ -24,7 +24,9 @@
 export const COLECCION_ESPEJO = 'movimientos_finanzas';
 // 2 (2026-10-12): la propuesta para Costos (propuesta.mjs): cuentaPropuesta por
 // concepto, idPdvPropuesto y fechaGasto por movimiento. Los de versión 1 no la traen.
-export const VERSION_ESPEJO = 2;
+// 3 (2026-10-12, incremento 9): `tipoGasto` por concepto, el tipo de gasto que
+// eligió la IA (de `tipos_gasto` o `tipos_gasto_copiloto`). Los de antes no lo traen.
+export const VERSION_ESPEJO = 3;
 
 /** Los Decimal de Prisma, los textos y los números pasan a número; los nulos se quedan nulos. */
 const aNumero = (valor) => (valor === null || valor === undefined ? null : Number(valor));
@@ -69,7 +71,7 @@ export function debeEspejar(mov) {
  *   entradaAlmacenId?: string | null,
  *   idPdvPropuesto?: string | null,
  *   fechaGasto?: string | null,
- *   conceptos?: Array<{ id: string, cantidad: unknown, descripcion: string, precioUnitario?: unknown, importeTotal: unknown, esInsumo?: boolean | null, cuentaCostoPropuesta?: string | null }>
+ *   conceptos?: Array<{ id: string, cantidad: unknown, descripcion: string, precioUnitario?: unknown, importeTotal: unknown, esInsumo?: boolean | null, cuentaCostoPropuesta?: string | null, tipoGastoId?: string | null }>
  * }} mov
  * @param {Date} ahora - cuándo se escribe
  */
@@ -102,7 +104,8 @@ export function payloadMovimientoFinanzas(mov, ahora) {
       precioUnitario: aCentavos(c.precioUnitario),
       importeTotal: aCentavos(c.importeTotal),
       esInsumo: c.esInsumo === true,
-      cuentaPropuesta: c.cuentaCostoPropuesta ?? null
+      cuentaPropuesta: c.cuentaCostoPropuesta ?? null,
+      tipoGasto: c.tipoGastoId ?? null
     })),
     espejadoEn: ahora.toISOString()
   };
@@ -130,7 +133,7 @@ const huella = (doc) => JSON.stringify({
   entradaAlmacenId: doc.entradaAlmacenId ?? null,
   idPdvPropuesto: doc.idPdvPropuesto ?? null,
   fechaGasto: doc.fechaGasto ?? null,
-  conceptos: (doc.conceptos || []).map((c) => [c.id, c.importeTotal, c.esInsumo === true, c.cuentaPropuesta ?? null])
+  conceptos: (doc.conceptos || []).map((c) => [c.id, c.importeTotal, c.esInsumo === true, c.cuentaPropuesta ?? null, c.tipoGasto ?? null])
 });
 
 /**

@@ -1,6 +1,6 @@
 // Pruebas de la propuesta para Costos (propuesta.mjs). Puras: sin base, sin Firestore, sin IA.
 import { describe, it, expect } from 'vitest';
-import { hoyEnMexico, catalogoDePropuesta, hayCatalogo, instruccionDePropuesta, normalizarPropuesta, textoDePropuesta, NINGUNA } from './propuesta.mjs';
+import { hoyEnMexico, catalogoDePropuesta, hayCatalogo, hayTipos, instruccionDePropuesta, normalizarPropuesta, textoDePropuesta, nombreDeTipoNuevo, idDeTipo, datosDeTipoNuevo, NINGUNA, NUEVO } from './propuesta.mjs';
 
 const catalogo = catalogoDePropuesta(
   [
@@ -42,7 +42,7 @@ describe('normalizarPropuesta', () => {
   const mov = (extra) => ({ contexto: 'NEGOCIO', sucursal: 'sucursal-calle11', fechaGasto: '2026-10-09', articulos: [{ cuentaCosto: 'gasolina' }, { cuentaCosto: 'inventada' }, { cuentaCosto: NINGUNA }], ...extra });
 
   it('se queda con lo que existe en el catálogo', () => {
-    expect(normalizarPropuesta(mov({}), catalogo, hoy)).toEqual({ idPdvPropuesto: 'sucursal-calle11', fechaGasto: '2026-10-09', cuentas: ['gasolina', null, null] });
+    expect(normalizarPropuesta(mov({}), catalogo, hoy)).toEqual({ idPdvPropuesto: 'sucursal-calle11', fechaGasto: '2026-10-09', cuentas: ['gasolina', null, null], tipos: [null, null, null] });
   });
 
   it('una sucursal que no existe o "ninguna" no se guarda', () => {
@@ -60,7 +60,7 @@ describe('normalizarPropuesta', () => {
   });
 
   it('lo personal, o sin catálogo, no lleva propuesta', () => {
-    expect(normalizarPropuesta(mov({ contexto: 'PERSONAL' }), catalogo, hoy)).toEqual({ idPdvPropuesto: null, fechaGasto: null, cuentas: [null, null, null] });
+    expect(normalizarPropuesta(mov({ contexto: 'PERSONAL' }), catalogo, hoy)).toEqual({ idPdvPropuesto: null, fechaGasto: null, cuentas: [null, null, null], tipos: [null, null, null] });
     expect(normalizarPropuesta(mov({}), catalogoDePropuesta([], []), hoy).cuentas).toEqual([null, null, null]);
   });
 });
@@ -69,5 +69,80 @@ describe('textoDePropuesta', () => {
   it('lo dice en una línea, sin repetir cuentas', () => {
     expect(textoDePropuesta({ cuentas: ['gasolina', 'gasolina', null], idPdvPropuesto: 'sucursal-calle11', fechaGasto: '2026-10-10' }, catalogo)).toBe('Gasolina · Calle 11 · 10 de octubre');
     expect(textoDePropuesta({ cuentas: [null] }, catalogo)).toBe('');
+  });
+});
+
+// El tipo de gasto (2026-10-12, incremento 9 de Costos operativos de lps-platform).
+describe('el tipo de gasto', () => {
+  const conTipos = catalogoDePropuesta(
+    [{ id: 'gasolina', nombre: 'Gasolina', grupo: 'transporte' }, { id: 'alimentos', nombre: 'Alimentos', grupo: 'insumos-receta' }, { id: 'renta-de-cocina', nombre: 'Renta de cocina', grupo: 'operacion-cocina' }],
+    [{ id: 'sucursal-calle11', nombre: 'Calle 11' }],
+    [
+      { id: 'gasolina', nombre: 'Gasolina o transporte', ayuda: 'gasolina, pasajes', cuentaId: 'gasolina' },
+      { id: 'ingredientes', nombre: 'Ingredientes', ayuda: 'verdura, fruta', cuentaId: 'alimentos' },
+      { id: 'hielo', nombre: 'Hielo', cuentaId: null },
+      { id: 'bodega', nombre: 'Bodega', activa: false },
+      { id: 'plaza', activa: false } // corrección sin nombre: se omite
+    ]
+  );
+  const art = (tipoGasto, extra = {}) => ({ cuentaCosto: NINGUNA, tipoGasto, ...extra });
+  const tiposDe = (articulos, contexto = 'NEGOCIO', cat = conTipos) => normalizarPropuesta({ contexto, articulos }, cat, hoy).tipos;
+
+  it('el catálogo lleva los tipos de la lista, por nombre; sin tipos no se elige ninguno', () => {
+    expect(conTipos.tipos.map((t) => t.id)).toEqual(['gasolina', 'hielo', 'ingredientes']);
+    expect(hayTipos(conTipos)).toBe(true);
+    expect(hayTipos(catalogo)).toBe(false);
+    expect(tiposDe([art('gasolina')], 'NEGOCIO', catalogo)).toEqual([null]);
+    expect(instruccionDePropuesta(catalogo, hoy)).not.toContain('tipoGasto');
+  });
+
+  it('la instrucción dice cada tipo con su cuenta, y cómo pedir uno nuevo', () => {
+    const t = instruccionDePropuesta(conTipos, hoy);
+    expect(t).toContain('- gasolina: Gasolina o transporte (gasolina, pasajes) → Gasolina');
+    expect(t).toMatch(/- hielo: Hielo\n/);
+    expect(t).toContain(`pon "${NUEVO}" en 'tipoGasto'`);
+    expect(t).not.toContain('Bodega');
+  });
+
+  it('un tipo de la lista, por su id; uno inventado o quitado de la lista, ninguno', () => {
+    expect(tiposDe([art('ingredientes'), art('inventado'), art('bodega'), art(NINGUNA), art(undefined)])).toEqual([{ id: 'ingredientes' }, null, null, null, null]);
+  });
+
+  it('uno nuevo lleva su nombre limpio y la cuenta que sugirió la IA, si existe', () => {
+    expect(tiposDe([art(NUEVO, { tipoNuevo: '  renta de   cocina ', cuentaCosto: 'renta-de-cocina' }), art(NUEVO, { tipoNuevo: 'Gas de cocina', cuentaCosto: 'gas' })])).toEqual([
+      { id: 'renta-de-cocina', nuevo: { nombre: 'Renta de cocina', cuentaSugerida: 'renta-de-cocina' } },
+      { id: 'gas-de-cocina', nuevo: { nombre: 'Gas de cocina', cuentaSugerida: null } }
+    ]);
+  });
+
+  it('uno "nuevo" que ya existe con ese nombre o ese id es el que existe', () => {
+    expect(tiposDe([art(NUEVO, { tipoNuevo: 'HIELO' }), art(NUEVO, { tipoNuevo: 'Gasolina o Transporte' }), art(NUEVO, { tipoNuevo: 'ingredientes' })])).toEqual([{ id: 'hielo' }, { id: 'gasolina' }, { id: 'ingredientes' }]);
+  });
+
+  it('un nombre que no dice qué es, vacío o largo, no crea nada', () => {
+    expect(tiposDe([art(NUEVO, { tipoNuevo: 'Otros gastos' }), art(NUEVO, { tipoNuevo: 'Insumo / Producto' }), art(NUEVO), art(NUEVO, { tipoNuevo: 'x'.repeat(41) })])).toEqual([null, null, null, null]);
+    expect(nombreDeTipoNuevo('luz de sucursal')).toBe('Luz de sucursal');
+  });
+
+  it('el id es el de lps-platform: sin acentos, minúsculas y guiones', () => {
+    expect(idDeTipo('Teléfono e Internet')).toBe('telefono-e-internet');
+    expect(idDeTipo('  Gas  de cocina ')).toBe('gas-de-cocina');
+  });
+
+  it('lo personal no lleva tipo', () => {
+    expect(tiposDe([art('gasolina')], 'PERSONAL')).toEqual([null]);
+  });
+
+  it('el documento del tipo nuevo nace sin cuenta, del Copiloto y a nombre de quien capturó', () => {
+    const ahora = new Date('2026-10-12T18:00:00.000Z');
+    expect(datosDeTipoNuevo({ nombre: 'Renta de cocina', cuentaSugerida: 'renta-de-cocina' }, { usuarioId: 'u1', ahora })).toEqual({
+      nombre: 'Renta de cocina', cuentaId: null, cuentaSugerida: 'renta-de-cocina', activa: true, origen: 'copiloto', creadoPor: 'u1', creadoEn: ahora.toISOString()
+    });
+  });
+
+  it('el chat dice los tipos, y avisa del nuevo; sin tipos, las cuentas como antes', () => {
+    expect(textoDePropuesta({ cuentas: ['alimentos', 'renta-de-cocina'], tipos: [{ id: 'ingredientes' }, { id: 'renta-de-cocina', nuevo: { nombre: 'Renta de cocina', cuentaSugerida: null } }], idPdvPropuesto: 'sucursal-calle11' }, conTipos))
+      .toBe('Ingredientes, «Renta de cocina» (tipo nuevo, falta su cuenta) · Calle 11');
+    expect(textoDePropuesta({ cuentas: ['gasolina'], tipos: [null] }, conTipos)).toBe('Gasolina');
   });
 });
