@@ -327,9 +327,11 @@ export default function CopilotChat() {
 
         contentStr += `La información ya es inmutable en tu Motor de Realidad.`;
 
-        if ((result as any).fallosInventario?.length) {
-          contentStr += `\n\n⚠️ **El inventario NO se actualizó** (${(result as any).fallosInventario.length} entrada(s)). El movimiento contable sí quedó registrado.\n`;
-          contentStr += (result as any).fallosInventario.map((f: any) => `  - ${f.motivo}`).join('\n');
+        // Lo que no se pudo hacer además del registro contable: el comprobante,
+        // el inventario o Costos en la plataforma (actions.ts los junta en `avisos`).
+        if (result.avisos?.length) {
+          contentStr += `\n\n⚠️ **Avisos** (${result.avisos.length}). El movimiento contable sí quedó registrado.\n`;
+          contentStr += result.avisos.map((a) => `  - ${a.motivo}`).join('\n');
         }
 
         const responseMessage = {

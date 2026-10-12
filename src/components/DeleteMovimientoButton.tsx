@@ -15,6 +15,7 @@ export default function DeleteMovimientoButton({ id }: { id: string }) {
     const res = await deleteMovimiento(id);
     
     if (res?.success) {
+      if (res.aviso) alert(res.aviso);
       router.refresh();
     } else {
       alert(res?.error || 'No se pudo eliminar');
