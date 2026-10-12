@@ -11,6 +11,7 @@ import { dbFirestore } from '@/lib/firebase'
 import { put } from '@vercel/blob'
 import { REGLAS_INSUMO, debeInyectar, articulosParaAlmacen, payloadEntradaAlmacen, accionDePuente } from '@/lib/insumos'
 import { COLECCION_ESPEJO, debeEspejar, payloadMovimientoFinanzas } from '@/lib/espejo.mjs'
+import { NINGUNA, hoyEnMexico, catalogoDePropuesta, hayCatalogo, instruccionDePropuesta, normalizarPropuesta, textoDePropuesta } from '@/lib/propuesta.mjs'
 
 export async function createMovimiento(formData: { inputOriginal: string, imageBase64?: string, clientMessageId?: string }) {
   try {
@@ -55,6 +56,15 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
       messagesContent.push({ type: 'file', mediaType, data: base64Content });
     }
 
+    // La propuesta para Costos (2026-10-12, src/lib/propuesta.mjs): el catálogo
+    // de cuentas y sucursales de la plataforma va en la instrucción. Si no se
+    // puede leer, la captura sigue igual que antes, sin propuesta.
+    const catalogo = await cargarCatalogo();
+    const hoy = hoyEnMexico();
+    const conPropuesta = hayCatalogo(catalogo);
+    const idsCuenta: [string, ...string[]] = [NINGUNA, ...catalogo.cuentas.map((c: { id: string }) => c.id)];
+    const idsPdv: [string, ...string[]] = [NINGUNA, ...catalogo.pdvs.map((p: { id: string }) => p.id)];
+
     const { object } = await generateObject({
       model: google('gemini-3.6-flash'), // Versión 2026
       maxRetries: 0, // Desactivar reintentos automáticos (evita quemar cuota en errores 429)
@@ -93,7 +103,8 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
       - 'ALIMENTOS' solo para comida consumida por las personas (tortas, refrescos, comidas del personal), no para ingredientes que se compran para producir.
       - Si el ticket mezcla insumos con otras cosas, deja la categoría que domine y marca cada artículo con 'esInsumo'.
 
-      ${REGLAS_INSUMO}`,
+      ${REGLAS_INSUMO}
+      ${conPropuesta ? instruccionDePropuesta(catalogo, hoy) : ''}`,
       messages: [
         {
           role: 'user',
@@ -110,12 +121,15 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
           contexto: z.enum(['NEGOCIO', 'PERSONAL']).describe('El contexto o entorno del gasto. NEGOCIO por defecto, PERSONAL si es explícitamente familiar o de casa.'),
           categoria: z.enum(['ALIMENTOS', 'TRANSPORTE', 'SALUD', 'OFICINA', 'INVENTARIO', 'HONORARIOS', 'MANTENIMIENTO', 'OTROS']).describe('Categoriza el gasto según su naturaleza.'),
           contraparte: z.string().optional().describe('El nombre de la tienda, proveedor o cliente.'),
+          sucursal: (conPropuesta ? z.enum(idsPdv) : z.string()).optional().describe(`El id de la sucursal solo si el mensaje la nombra; si no, "${NINGUNA}".`),
+          fechaGasto: z.string().optional().describe('El día en que se hizo el gasto, AAAA-MM-DD, solo si el mensaje o el ticket lo dicen. Vacío si no.'),
           articulos: z.array(z.object({
             cantidad: z.number().describe('La cantidad adquirida del producto.'),
             descripcion: z.string().describe('El nombre o descripción del producto o servicio.'),
             precioUnitario: z.number().describe('El precio por unidad.'),
             importeTotal: z.number().describe('El importe total por esta línea (cantidad * precio unitario).'),
-            esInsumo: z.boolean().describe('true si el artículo es un insumo del negocio (ingrediente, empaque, desechable, consumible de cocina); false si es propina, descuento, transporte, comida consumida, equipo, servicio o algo para la casa.')
+            esInsumo: z.boolean().describe('true si el artículo es un insumo del negocio (ingrediente, empaque, desechable, consumible de cocina); false si es propina, descuento, transporte, comida consumida, equipo, servicio o algo para la casa.'),
+            cuentaCosto: (conPropuesta ? z.enum(idsCuenta) : z.string()).optional().describe(`El id de la cuenta de costo del artículo, de la lista; "${NINGUNA}" si ninguna le queda clara.`)
           })).describe('OBLIGATORIO: Arreglo de artículos adquiridos. NUNCA lo omitas. Si no hay productos, devuelve un arreglo vacío [].'),
         })).describe('Lista de movimientos económicos identificados en el mensaje.')
       }),
@@ -134,12 +148,16 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
     }
 
     const savedMovimientos = [];
+    // Lo propuesto para Costos, en texto para el chat, uno por movimiento guardado.
+    const propuestas: string[] = [];
 
     let index = 0;
     for (const mov of object.movimientos) {
       const isOperador = session.usuario.rol === 'OPERADOR';
       const finalContext = isOperador ? 'NEGOCIO' : mov.contexto;
       const key = formData.clientMessageId ? `${formData.clientMessageId}-${index}` : undefined;
+      // Revisada contra el catálogo: lo que no existe ahí no se guarda.
+      const propuesta = normalizarPropuesta({ contexto: finalContext, sucursal: mov.sucursal, fechaGasto: mov.fechaGasto, articulos: mov.articulos }, catalogo, hoy);
 
       let movimiento;
       try {
@@ -159,6 +177,8 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
             descripcionOriginal,
             estado: fileUrl ? 'COMPROBADO' : 'PENDIENTE_COMPROBANTE',
             contraparteNombre: mov.contraparte || null,
+            idPdvPropuesto: propuesta.idPdvPropuesto,
+            fechaGasto: propuesta.fechaGasto,
             comprobantes: fileUrl ? {
               create: {
                 tipo: 'TICKET_IMAGEN',
@@ -168,7 +188,7 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
               }
             } : undefined,
             conceptos: {
-              create: mov.articulos.map((art: any) => ({
+              create: mov.articulos.map((art: any, i: number) => ({
                 cantidad: art.cantidad,
                 descripcion: art.descripcion,
                 precioUnitario: art.precioUnitario,
@@ -177,6 +197,7 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
                 // INVENTARIO todos lo son (la categoría significa eso). El puente
                 // solo mira esta marca, artículo por artículo.
                 esInsumo: finalContext === 'NEGOCIO' && (mov.categoria === 'INVENTARIO' || art.esInsumo === true),
+                cuentaCostoPropuesta: propuesta.cuentas[i],
               }))
             }
           },
@@ -191,6 +212,7 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
           });
           if (existing) {
              savedMovimientos.push(existing);
+             propuestas.push('');
              index++;
              continue; // Saltamos a la siguiente iteracion para no inyectar a Firebase dos veces
           }
@@ -246,10 +268,11 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
       if (avisoEspejo) avisos.push({ tipo: 'COSTOS', motivo: avisoEspejo });
 
       savedMovimientos.push(movimiento);
+      propuestas.push(textoDePropuesta(propuesta, catalogo));
       index++;
     }
     
-    return { success: true, data: savedMovimientos, ia_extraction: object, avisos }
+    return { success: true, data: savedMovimientos, ia_extraction: object, avisos, propuestas }
   } catch (error: any) {
     console.error('Error creando movimiento con IA:', error)
     return { success: false, error: 'No pude procesar la solicitud. ' + error.message }
@@ -424,5 +447,26 @@ async function sincronizarEspejo(movimientoId: string): Promise<string | null> {
   } catch (error: any) {
     console.error('❌ No se pudo escribir el movimiento en el espejo:', error);
     return `El movimiento no llegó a Costos de la plataforma: ${error?.message ?? String(error)}`;
+  }
+}
+
+// El catálogo de la plataforma para la propuesta (2026-10-12): las cuentas de
+// costo y las sucursales, de Firestore. Unas 45 lecturas; se guardan diez
+// minutos en la memoria del servidor para no repetirlas en cada captura. Si
+// Firestore falla, sale vacío y la captura sigue sin propuesta.
+const MINUTOS_CATALOGO = 10;
+let catalogoEnMemoria: { leido: number, catalogo: ReturnType<typeof catalogoDePropuesta> } | null = null;
+
+async function cargarCatalogo() {
+  if (catalogoEnMemoria && Date.now() - catalogoEnMemoria.leido < MINUTOS_CATALOGO * 60 * 1000) return catalogoEnMemoria.catalogo;
+  if (!dbFirestore) return catalogoDePropuesta([], []);
+  try {
+    const [cuentas, pdvs] = await Promise.all([dbFirestore.collection('cuentas_costo').get(), dbFirestore.collection('puntos_venta').get()]);
+    const catalogo = catalogoDePropuesta(cuentas.docs.map((d) => ({ id: d.id, ...d.data() })), pdvs.docs.map((d) => ({ id: d.id, ...d.data() })));
+    catalogoEnMemoria = { leido: Date.now(), catalogo };
+    return catalogo;
+  } catch (error) {
+    console.error('❌ No se pudo leer el catálogo de la plataforma; la captura sigue sin propuesta:', error);
+    return catalogoDePropuesta([], []);
   }
 }

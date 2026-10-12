@@ -321,8 +321,11 @@ export default function CopilotChat() {
             ? `\n  - **Detalle de Artículos:**\n    - ` + extraction.articulos.map((c: any) => `[${c.cantidad}x] ${c.descripcion} ($${c.importeTotal})`).join('\n    - ')
             : '';
           const contextoIcon = mov.contexto === 'PERSONAL' ? '🏠 PERSONAL' : '🏢 NEGOCIO';
-            
-          contentStr += `**${index + 1}. ${mov.tipo} por $${mov.importe}** [${contextoIcon}] [🏷️ ${mov.categoria}] ${extraInfo}${ivaInfo}${conceptosInfo}\n  - **Estado:** ${mov.estado}\n\n`;
+          // Lo que la IA propuso para Costos de la plataforma (2026-10-12).
+          const propuesta = result.propuestas?.[index];
+          const propuestaInfo = propuesta ? `\n  - **Para Costos propuse:** ${propuesta}` : '';
+
+          contentStr += `**${index + 1}. ${mov.tipo} por $${mov.importe}** [${contextoIcon}] [🏷️ ${mov.categoria}] ${extraInfo}${ivaInfo}${conceptosInfo}${propuestaInfo}\n  - **Estado:** ${mov.estado}\n\n`;
         });
 
         contentStr += `La información ya es inmutable en tu Motor de Realidad.`;

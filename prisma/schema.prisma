@@ -41,6 +41,15 @@ model Movimiento {
   // Id del documento creado en entradas_almacen (LPS Platform) cuando el
   // movimiento cruzo el puente; null si no ha cruzado (2026-09-16).
   entradaAlmacenId     String?
+  // Lo que la IA propone al capturar, para la pestaña Costos de la
+  // plataforma (2026-10-12, ver src/lib/propuesta.mjs). Las reglas de
+  // Dirección mandan sobre la propuesta; aquí solo se guarda.
+  // La sucursal, si el texto la dice: un id de `puntos_venta`.
+  idPdvPropuesto       String?
+  // El día en que se hizo el gasto, 'AAAA-MM-DD', si el texto o el ticket lo
+  // dicen ("ayer", "renta de septiembre" = el 1 de septiembre). No reemplaza
+  // a fechaOcurrencia, que es cuándo se registró.
+  fechaGasto           String?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 }
@@ -169,6 +178,9 @@ model Concepto {
   // Insumo del negocio: viaja a la plataforma de produccion (2026-09-16).
   // Lo marca la IA por articulo al extraer; ver src/lib/insumos.ts.
   esInsumo             Boolean  @default(false)
-  
+  // La cuenta de costo que propone la IA (un id de `cuentas_costo` de la
+  // plataforma), 2026-10-12. Ver src/lib/propuesta.mjs.
+  cuentaCostoPropuesta String?
+
   createdAt            DateTime @default(now())
 }

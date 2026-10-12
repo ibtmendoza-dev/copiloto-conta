@@ -22,7 +22,9 @@
 // Todo lo de aquí es puro: sin base, sin Firestore, probado en espejo.test.ts.
 
 export const COLECCION_ESPEJO = 'movimientos_finanzas';
-export const VERSION_ESPEJO = 1;
+// 2 (2026-10-12): la propuesta para Costos (propuesta.mjs): cuentaPropuesta por
+// concepto, idPdvPropuesto y fechaGasto por movimiento. Los de versión 1 no la traen.
+export const VERSION_ESPEJO = 2;
 
 /** Los Decimal de Prisma, los textos y los números pasan a número; los nulos se quedan nulos. */
 const aNumero = (valor) => (valor === null || valor === undefined ? null : Number(valor));
@@ -65,7 +67,9 @@ export function debeEspejar(mov) {
  *   estado?: string | null,
  *   usuarioId?: string | null,
  *   entradaAlmacenId?: string | null,
- *   conceptos?: Array<{ id: string, cantidad: unknown, descripcion: string, precioUnitario?: unknown, importeTotal: unknown, esInsumo?: boolean | null }>
+ *   idPdvPropuesto?: string | null,
+ *   fechaGasto?: string | null,
+ *   conceptos?: Array<{ id: string, cantidad: unknown, descripcion: string, precioUnitario?: unknown, importeTotal: unknown, esInsumo?: boolean | null, cuentaCostoPropuesta?: string | null }>
  * }} mov
  * @param {Date} ahora - cuándo se escribe
  */
@@ -89,13 +93,16 @@ export function payloadMovimientoFinanzas(mov, ahora) {
     estado: mov.estado ?? null,
     usuarioId: mov.usuarioId ?? null,
     entradaAlmacenId: mov.entradaAlmacenId ?? null,
+    idPdvPropuesto: mov.idPdvPropuesto ?? null,
+    fechaGasto: mov.fechaGasto ?? null,
     conceptos: conceptos.map((c) => ({
       id: c.id,
       cantidad: aNumero(c.cantidad),
       descripcion: c.descripcion ?? '',
       precioUnitario: aCentavos(c.precioUnitario),
       importeTotal: aCentavos(c.importeTotal),
-      esInsumo: c.esInsumo === true
+      esInsumo: c.esInsumo === true,
+      cuentaPropuesta: c.cuentaCostoPropuesta ?? null
     })),
     espejadoEn: ahora.toISOString()
   };
@@ -121,7 +128,9 @@ const huella = (doc) => JSON.stringify({
   momento: doc.momento,
   tipo: doc.tipo,
   entradaAlmacenId: doc.entradaAlmacenId ?? null,
-  conceptos: (doc.conceptos || []).map((c) => [c.id, c.importeTotal, c.esInsumo === true])
+  idPdvPropuesto: doc.idPdvPropuesto ?? null,
+  fechaGasto: doc.fechaGasto ?? null,
+  conceptos: (doc.conceptos || []).map((c) => [c.id, c.importeTotal, c.esInsumo === true, c.cuentaPropuesta ?? null])
 });
 
 /**

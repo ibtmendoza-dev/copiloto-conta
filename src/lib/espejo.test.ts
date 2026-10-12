@@ -53,7 +53,7 @@ describe('payloadMovimientoFinanzas', () => {
     expect(p).toMatchObject({
       movimientoId: 'mov-renta',
       origen: 'copiloto-conta',
-      version: 1,
+      version: 2,
       contexto: 'NEGOCIO',
       tipo: 'GASTO',
       categoria: 'OTROS',
@@ -81,7 +81,7 @@ describe('payloadMovimientoFinanzas', () => {
     expect(p.importe).toBe(1700.51);
     expect(p.subtotal).toBe(1466);
     expect(p.iva).toBe(234.5);
-    expect(p.conceptos[0]).toEqual({ id: 'c-2', cantidad: 0.125, descripcion: 'QUESO PANELA', precioUnitario: 1200, importeTotal: 150, esInsumo: true });
+    expect(p.conceptos[0]).toEqual({ id: 'c-2', cantidad: 0.125, descripcion: 'QUESO PANELA', precioUnitario: 1200, importeTotal: 150, esInsumo: true, cuentaPropuesta: null });
   });
 
   it('viajan TODOS los artículos, no solo los insumos, cada uno con su marca', () => {
@@ -143,5 +143,33 @@ describe('cotejarEspejo', () => {
     const r = cotejarEspejo(esperados, []);
     expect(r.faltan).toHaveLength(2);
     expect(r.porMes[0].espejo).toEqual({ movimientos: 0, total: 0 });
+  });
+});
+
+describe('la propuesta para Costos (versión 2, 2026-10-12)', () => {
+  it('viaja la cuenta propuesta de cada artículo, la sucursal y la fecha del gasto', () => {
+    const conPropuesta = {
+      ...costco, idPdvPropuesto: 'sucursal-calle11', fechaGasto: '2026-10-04',
+      conceptos: costco.conceptos.map((c, i) => ({ ...c, cuentaCostoPropuesta: i === 1 ? 'equipo-menor' : null }))
+    };
+    const p = payloadMovimientoFinanzas(conPropuesta, ahora);
+    expect(p).toMatchObject({ version: 2, idPdvPropuesto: 'sucursal-calle11', fechaGasto: '2026-10-04' });
+    expect(p.conceptos.map((c) => c.cuentaPropuesta)).toEqual([null, 'equipo-menor', null]);
+  });
+
+  it('sin propuesta, todo en null; y un documento de la versión 1 coteja igual que uno sin propuesta', () => {
+    const p = payloadMovimientoFinanzas(renta, ahora);
+    expect(p).toMatchObject({ idPdvPropuesto: null, fechaGasto: null });
+    expect(p.conceptos[0].cuentaPropuesta).toBeNull();
+    const deVersion1 = { ...p, version: 1, conceptos: p.conceptos.map(({ cuentaPropuesta, ...c }) => c) };
+    delete deVersion1.idPdvPropuesto;
+    delete deVersion1.fechaGasto;
+    expect(cotejarEspejo([p], [deVersion1]).cuadra).toBe(true);
+  });
+
+  it('si la propuesta cambió, difiere y se vuelve a escribir', () => {
+    const p = payloadMovimientoFinanzas(renta, ahora);
+    const otra = { ...p, conceptos: p.conceptos.map((c) => ({ ...c, cuentaPropuesta: 'renta-de-cocina' })) };
+    expect(cotejarEspejo([otra], [p]).difieren).toHaveLength(1);
   });
 });
