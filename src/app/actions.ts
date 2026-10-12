@@ -10,6 +10,7 @@ import { getSession } from '@/lib/auth'
 import { dbFirestore } from '@/lib/firebase'
 import { put } from '@vercel/blob'
 import { REGLAS_INSUMO, debeInyectar, articulosParaAlmacen, payloadEntradaAlmacen, accionDePuente } from '@/lib/insumos'
+import { COLECCION_ESPEJO, debeEspejar, payloadMovimientoFinanzas } from '@/lib/espejo.mjs'
 
 export async function createMovimiento(formData: { inputOriginal: string, imageBase64?: string, clientMessageId?: string }) {
   try {
@@ -239,6 +240,11 @@ export async function createMovimiento(formData: { inputOriginal: string, imageB
         }
       }
 
+      // El espejo va después del puente de insumos: así ya lleva el
+      // entradaAlmacenId, que la plataforma usa para no contar dos veces.
+      const avisoEspejo = await sincronizarEspejo(movimiento.id);
+      if (avisoEspejo) avisos.push({ tipo: 'COSTOS', motivo: avisoEspejo });
+
       savedMovimientos.push(movimiento);
       index++;
     }
@@ -294,7 +300,24 @@ export async function deleteMovimiento(id: string) {
         avisoAlmacen = 'El movimiento se borró, pero su entrada de almacén sigue en la plataforma: Firestore no está configurado en este despliegue.';
       }
     }
-    if (avisoAlmacen) return { success: true, aviso: avisoAlmacen };
+
+    // Y su copia en el espejo (2026-10-11), con el mismo criterio: se avisa, no se lanza.
+    let avisoEspejo: string | null = null;
+    if (debeEspejar(movimiento)) {
+      if (dbFirestore) {
+        try {
+          await dbFirestore.collection(COLECCION_ESPEJO).doc(movimiento.id).delete();
+        } catch (firebaseError: any) {
+          avisoEspejo = `El movimiento se borró, pero sigue en Costos de la plataforma: ${firebaseError?.message ?? String(firebaseError)}`;
+          console.error('❌ No se pudo retirar el movimiento del espejo:', firebaseError);
+        }
+      } else {
+        avisoEspejo = 'El movimiento se borró, pero sigue en Costos de la plataforma: Firestore no está configurado en este despliegue.';
+      }
+    }
+
+    const aviso = [avisoAlmacen, avisoEspejo].filter(Boolean).join('\n');
+    if (aviso) return { success: true, aviso };
 
     return { success: true };
   } catch (error: any) {
@@ -328,7 +351,10 @@ export async function setConceptoInsumo(conceptoId: string, esInsumo: boolean) {
     }
 
     await prisma.concepto.update({ where: { id: conceptoId }, data: { esInsumo } });
-    const aviso = await sincronizarEntradaAlmacen(mov.id);
+    const avisoAlmacen = await sincronizarEntradaAlmacen(mov.id);
+    // Después del puente: el puente puede crear o retirar la entrada de almacén.
+    const avisoEspejo = await sincronizarEspejo(mov.id);
+    const aviso = [avisoAlmacen, avisoEspejo].filter(Boolean).join('\n') || null;
     return { success: true, aviso };
   } catch (error: any) {
     console.error('Error al cambiar la marca de insumo:', error);
@@ -376,5 +402,27 @@ async function sincronizarEntradaAlmacen(movimientoId: string): Promise<string |
   } catch (firebaseError: any) {
     console.error('❌ No se pudo sincronizar la entrada de almacén:', firebaseError);
     return `La marca se guardó, pero la plataforma no se actualizó: ${firebaseError?.message ?? String(firebaseError)}`;
+  }
+}
+
+/**
+ * Deja la copia del movimiento en `movimientos_finanzas` (el espejo para la
+ * pestaña Costos de la plataforma, 2026-10-11) igual que el movimiento de hoy,
+ * con todos sus artículos. Se lee otra vez de la base para llevar el
+ * entradaAlmacenId que el puente acaba de poner o quitar. Devuelve un aviso en
+ * texto si la plataforma no se pudo tocar; nunca lanza, porque el registro
+ * contable ya está hecho. Lo que no llegue lo encuentra el cotejo de
+ * scripts/espejar-movimientos.js.
+ */
+async function sincronizarEspejo(movimientoId: string): Promise<string | null> {
+  try {
+    const movimiento = await prisma.movimiento.findUnique({ where: { id: movimientoId }, include: { conceptos: true } });
+    if (!movimiento || !debeEspejar(movimiento)) return null;
+    if (!dbFirestore) return 'El movimiento no llegó a Costos de la plataforma: Firestore no está configurado en este despliegue.';
+    await dbFirestore.collection(COLECCION_ESPEJO).doc(movimiento.id).set(payloadMovimientoFinanzas(movimiento, new Date()));
+    return null;
+  } catch (error: any) {
+    console.error('❌ No se pudo escribir el movimiento en el espejo:', error);
+    return `El movimiento no llegó a Costos de la plataforma: ${error?.message ?? String(error)}`;
   }
 }

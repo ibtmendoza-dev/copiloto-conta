@@ -87,4 +87,4 @@ function confirmarBaseDeDatos(accion) {
   return destino;
 }
 
-module.exports = { confirmarBaseDeDatos };
+module.exports = { confirmarBaseDeDatos, describirBase };
