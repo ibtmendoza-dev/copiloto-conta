@@ -350,8 +350,11 @@ export default function CopilotChat() {
           // Lo que la IA propuso para Costos de la plataforma (2026-10-12).
           const propuesta = result.propuestas?.[index];
           const propuestaInfo = propuesta ? `\n  - **Para Costos propuse:** ${propuesta}` : '';
+          // La comisión de entrega de verduras, repartida en el precio (2026-10-19).
+          const reparto = result.repartos?.[index];
+          const repartoInfo = reparto ? `\n  - **Comisión de entrega:** ${reparto}` : '';
 
-          contentStr += `**${index + 1}. ${mov.tipo} por $${mov.importe}** [${contextoIcon}] [🏷️ ${mov.categoria}] ${extraInfo}${ivaInfo}${conceptosInfo}${propuestaInfo}\n  - **Estado:** ${mov.estado}\n\n`;
+          contentStr += `**${index + 1}. ${mov.tipo} por $${mov.importe}** [${contextoIcon}] [🏷️ ${mov.categoria}] ${extraInfo}${ivaInfo}${conceptosInfo}${repartoInfo}${propuestaInfo}\n  - **Estado:** ${mov.estado}\n\n`;
         });
 
         contentStr += `La información ya es inmutable en tu Motor de Realidad.`;
